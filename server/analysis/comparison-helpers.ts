@@ -55,6 +55,15 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
     };
   }
 
+  if (baselineTop?.name === currentTop?.name && baselineTop.module !== currentTop?.module) {
+    return {
+      kind: 'module-shifted',
+      summary: `Hotspot stayed on ${currentTop.name} but moved from ${baselineTop.module} to ${currentTop.module}.`,
+      attribution: `${currentTop.name} still leads the profile, but the dominant source location rotated to a different module.`,
+      emphasis: 'regressed' as ComparisonTrend,
+    };
+  }
+
   if (baselineTop?.name === currentTop?.name) {
     const delta = (currentTop?.percent ?? 0) - (baselineTop?.percent ?? 0);
     if (delta >= 6) {
@@ -83,10 +92,11 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
   }
 
   if (shared.length >= 2) {
+    const previousRank = baseline.topFunctions.findIndex((item) => item.name === currentTop?.name);
     return {
       kind: 'reordered',
       summary: `Hotspot leadership shifted from ${baselineTop?.name ?? 'n/a'} to ${currentTop?.name ?? 'n/a'} within the same hotspot cluster.`,
-      attribution: `${shared.join(', ')} remained in the top stack set, so the profile likely reordered existing pressure instead of introducing a brand-new path.`,
+      attribution: `${shared.join(', ')} remained in the top stack set, so the profile likely reordered existing pressure instead of introducing a brand-new path${previousRank >= 0 ? `; ${currentTop?.name ?? 'the current leader'} climbed from rank ${previousRank + 1}` : ''}.`,
       emphasis: 'flat' as ComparisonTrend,
     };
   }
@@ -103,7 +113,7 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
   return {
     kind: 'replaced',
     summary: `Hotspot completely rotated from ${baselineTop?.name ?? 'n/a'} to ${currentTop?.name ?? 'n/a'}.`,
-    attribution: `The leading stack set no longer overlaps, so a fresh execution path likely became dominant.`,
+    attribution: `The leading stack set no longer overlaps, so a fresh execution path likely became dominant in ${currentTop?.module ?? 'a new module'}.`,
     emphasis: 'regressed' as ComparisonTrend,
   };
 }

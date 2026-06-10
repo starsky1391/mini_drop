@@ -1,20 +1,27 @@
+import path from 'node:path';
 import type { TaskDetail } from '../../shared/types.js';
+import type {
+  CollectorFrameEvidence,
+  CollectorHotspotEvidence,
+  CollectorProfileEvidence,
+  CollectorStackEvidence,
+} from './types.js';
 
 type Hotspot = TaskDetail['topFunctions'][number];
 
-interface ParsedFrame {
-  name: string;
-  module: string;
-}
+interface ParsedFrame extends CollectorFrameEvidence {}
 
 interface WeightedStack {
   frames: ParsedFrame[];
   weight: number;
+  threadLabel: string | null;
 }
 
 interface SpeedscopeFrame {
   name?: string;
   file?: string;
+  line?: number;
+  col?: number;
 }
 
 interface SampledProfile {
@@ -43,26 +50,38 @@ interface SpeedscopeFile {
   profiles?: Array<SampledProfile | EventedProfile>;
 }
 
+interface HotspotAccumulator {
+  leaf: ParsedFrame;
+  weight: number;
+  sampleCount: number;
+  threadLabels: Set<string>;
+  callers: Map<string, { frame: ParsedFrame; weight: number }>;
+  bestStack: { frames: ParsedFrame[]; weight: number } | null;
+}
+
 export interface ParsedProfileSummary {
   sampleCount: number;
   topFunctions: Hotspot[];
   collapsedStacks: string;
   usedRealData: boolean;
+  evidence: CollectorProfileEvidence;
 }
 
 export function parsePerfScript(text: string): ParsedProfileSummary | null {
   const blocks = text
     .split(/\r?\n\r?\n/g)
-    .map((block) => block.trim())
+    .map((block) => block.trimEnd())
     .filter(Boolean);
   const samples: WeightedStack[] = [];
 
   for (const block of blocks) {
-    const lines = block
-      .split(/\r?\n/g)
-      .map((line) => line.trimEnd())
-      .filter(Boolean);
-    const frameLines = lines.filter((line) => /^\s/.test(line));
+    const rawLines = block.split(/\r?\n/g).filter((line) => line.trim().length > 0);
+    if (rawLines.length === 0) {
+      continue;
+    }
+
+    const header = parsePerfHeader(rawLines[0] ?? '');
+    const frameLines = rawLines.slice(1).filter((line) => /^\s/.test(line));
     if (frameLines.length === 0) {
       continue;
     }
@@ -72,12 +91,18 @@ export function parsePerfScript(text: string): ParsedProfileSummary | null {
       .filter((frame): frame is ParsedFrame => frame !== null)
       .reverse();
 
-    if (frames.length > 0) {
-      samples.push({ frames, weight: 1 });
+    if (frames.length === 0) {
+      continue;
     }
+
+    samples.push({
+      frames,
+      weight: header.weight,
+      threadLabel: header.threadLabel,
+    });
   }
 
-  return summarizeStacks(samples);
+  return summarizeStacks(samples, 'perf-script');
 }
 
 export function parseSpeedscopeProfile(text: string): ParsedProfileSummary | null {
@@ -92,15 +117,18 @@ export function parseSpeedscopeProfile(text: string): ParsedProfileSummary | nul
   const samples: WeightedStack[] = [];
 
   for (const profile of parsed.profiles ?? []) {
+    const threadLabel = sanitizeThreadLabel(profile.name);
     if (profile.type === 'sampled') {
       for (let index = 0; index < profile.samples.length; index += 1) {
         const sampleFrames = toFrames(profile.samples[index] ?? [], frames);
         if (sampleFrames.length === 0) {
           continue;
         }
+
         samples.push({
           frames: sampleFrames,
-          weight: profile.weights?.[index] ?? 1,
+          weight: Math.max(1, profile.weights?.[index] ?? 1),
+          threadLabel,
         });
       }
       continue;
@@ -113,13 +141,17 @@ export function parseSpeedscopeProfile(text: string): ParsedProfileSummary | nul
         const duration = Math.max(1, event.at - previousAt);
         const eventFrames = toFrames(stack, frames);
         if (eventFrames.length > 0) {
-          samples.push({ frames: eventFrames, weight: duration });
+          samples.push({
+            frames: eventFrames,
+            weight: duration,
+            threadLabel,
+          });
         }
       }
 
       if (event.type === 'O') {
         stack.push(event.frame);
-      } else if (event.type === 'C') {
+      } else if (event.type === 'C' && stack.length > 0) {
         stack.pop();
       }
 
@@ -127,7 +159,7 @@ export function parseSpeedscopeProfile(text: string): ParsedProfileSummary | nul
     }
   }
 
-  return summarizeStacks(samples);
+  return summarizeStacks(samples, 'speedscope');
 }
 
 export function mergeHotspots(primary: Hotspot[], fallback: Hotspot[], limit = 4): Hotspot[] {
@@ -166,6 +198,27 @@ export function buildCollapsedFromHotspots(title: string, hotspots: Hotspot[], l
   return lines.join('\n');
 }
 
+function parsePerfHeader(line: string) {
+  const trimmed = line.trim();
+  const match = trimmed.match(
+    /^(?<thread>.+?)\s+(?<pid>\d+)(?:\/(?<tid>\d+))?(?:\s+\[(?<cpu>\d+)\])?\s+[\d.]+:\s+(?:(?<period>\d+)\s+)?(?<event>[^:]+):/,
+  );
+
+  if (!match?.groups) {
+    return { threadLabel: null, weight: 1 };
+  }
+
+  const thread = match.groups.thread?.trim() ?? '';
+  const pid = match.groups.pid?.trim() ?? '';
+  const tid = match.groups.tid?.trim() ?? '';
+  const threadLabel = sanitizeThreadLabel(
+    tid && tid !== pid ? `${thread} ${pid}/${tid}` : thread || (pid ? `pid ${pid}` : ''),
+  );
+  const weight = Math.max(1, Number(match.groups.period ?? '1') || 1);
+
+  return { threadLabel, weight };
+}
+
 function parsePerfFrame(line: string): ParsedFrame | null {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -173,51 +226,64 @@ function parsePerfFrame(line: string): ParsedFrame | null {
   }
 
   const moduleMatch = trimmed.match(/\(([^()]+)\)\s*$/);
-  const moduleName = moduleMatch?.[1] ?? 'unknown';
-  const withoutModule = moduleMatch ? trimmed.slice(0, moduleMatch.index).trim() : trimmed;
-  const tokens = withoutModule.split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) {
+  const moduleName = moduleMatch?.[1]?.trim() || 'unknown/module';
+  const beforeModule = moduleMatch ? trimmed.slice(0, moduleMatch.index).trim() : trimmed;
+  const addressMatch = beforeModule.match(/^(?<address>0x[0-9a-f]+|[0-9a-f]+)\s+/i);
+  const address = addressMatch?.groups?.address ?? null;
+  const withoutAddress = addressMatch ? beforeModule.slice(addressMatch[0].length).trim() : beforeModule;
+
+  const source = extractSourceLocation(withoutAddress);
+  const symbolArea = source ? withoutAddress.slice(0, source.index).trim() : withoutAddress;
+  const symbol = sanitizeSymbol(symbolArea);
+  if (!symbol) {
     return null;
   }
 
-  let name = tokens[tokens.length - 1] ?? 'unknown';
-  if (/^0x[0-9a-f]+$/i.test(name) || /^[0-9a-f]+$/i.test(name)) {
-    name = tokens[tokens.length - 2] ?? name;
-  }
+  const sourceHint = source?.path ?? moduleName;
+  const file = source?.path ? path.basename(source.path) : basenameOrSelf(moduleName);
 
-  name = name.replace(/\+0x[0-9a-f]+$/i, '').replace(/^\[unknown\]$/, 'unknown');
-
-  if (!name || name === '-' || name === 'unknown') {
-    return null;
-  }
-
-  return { name, module: moduleName };
+  return {
+    name: symbol,
+    symbol,
+    module: moduleName,
+    file,
+    line: source?.line ?? null,
+    sourceHint,
+    address,
+  };
 }
 
 function toFrames(indexes: number[], frames: SpeedscopeFrame[]): ParsedFrame[] {
   return indexes
     .map((index) => {
       const frame = frames[index];
-      const name = sanitizeFrameName(frame?.name);
-      if (!name) {
+      const symbol = sanitizeFrameName(frame?.name);
+      if (!symbol) {
         return null;
       }
 
+      const sourcePath = frame?.file?.trim() || deriveModuleFromName(symbol);
       return {
-        name,
-        module: frame?.file?.trim() || deriveModuleFromName(name),
-      };
+        name: symbol,
+        symbol,
+        module: deriveModuleFromPathOrName(sourcePath, symbol),
+        file: basenameOrSelf(sourcePath),
+        line: typeof frame?.line === 'number' ? frame.line : null,
+        sourceHint: sourcePath,
+        address: null,
+      } as ParsedFrame;
     })
     .filter((frame): frame is ParsedFrame => frame !== null);
 }
 
-function summarizeStacks(samples: WeightedStack[]): ParsedProfileSummary | null {
+function summarizeStacks(samples: WeightedStack[], sourceKind: string): ParsedProfileSummary | null {
   if (samples.length === 0) {
     return null;
   }
 
-  const leafWeights = new Map<string, { hotspot: Hotspot; weight: number }>();
-  const collapsedWeights = new Map<string, number>();
+  const hotspotWeights = new Map<string, HotspotAccumulator>();
+  const collapsedWeights = new Map<string, CollectorStackEvidence>();
+  const threadLabels = new Set<string>();
   let totalWeight = 0;
 
   for (const sample of samples) {
@@ -226,41 +292,88 @@ function summarizeStacks(samples: WeightedStack[]): ParsedProfileSummary | null 
     }
 
     totalWeight += sample.weight;
-    const leaf = sample.frames[sample.frames.length - 1]!;
-    const leafKey = `${leaf.name}::${leaf.module}`;
-    const currentLeaf = leafWeights.get(leafKey);
-    if (currentLeaf) {
-      currentLeaf.weight += sample.weight;
-    } else {
-      leafWeights.set(leafKey, {
-        hotspot: {
-          name: leaf.name,
-          module: leaf.module,
-          percent: 0,
-        },
-        weight: sample.weight,
-      });
+    if (sample.threadLabel) {
+      threadLabels.add(sample.threadLabel);
     }
 
-    const stackKey = sample.frames.map((frame) => frame.name).join(';');
-    collapsedWeights.set(stackKey, (collapsedWeights.get(stackKey) ?? 0) + sample.weight);
+    const leaf = sample.frames[sample.frames.length - 1]!;
+    const leafKey = frameKey(leaf);
+    const current = hotspotWeights.get(leafKey) ?? {
+      leaf,
+      weight: 0,
+      sampleCount: 0,
+      threadLabels: new Set<string>(),
+      callers: new Map<string, { frame: ParsedFrame; weight: number }>(),
+      bestStack: null,
+    };
+
+    current.weight += sample.weight;
+    current.sampleCount += 1;
+    if (sample.threadLabel) {
+      current.threadLabels.add(sample.threadLabel);
+    }
+
+    const callers = sample.frames.slice(Math.max(0, sample.frames.length - 4), sample.frames.length - 1).reverse();
+    for (const caller of callers) {
+      const key = frameKey(caller);
+      const existing = current.callers.get(key);
+      if (existing) {
+        existing.weight += sample.weight;
+      } else {
+        current.callers.set(key, { frame: caller, weight: sample.weight });
+      }
+    }
+
+    if (!current.bestStack || sample.weight > current.bestStack.weight) {
+      current.bestStack = {
+        frames: sample.frames.slice(),
+        weight: sample.weight,
+      };
+    }
+
+    hotspotWeights.set(leafKey, current);
+
+    const stackKey = sample.frames.map((frame) => frame.symbol).join(';');
+    const stackEvidence = collapsedWeights.get(stackKey);
+    if (stackEvidence) {
+      stackEvidence.weight += sample.weight;
+    } else {
+      collapsedWeights.set(stackKey, {
+        key: stackKey,
+        weight: sample.weight,
+        threadLabel: sample.threadLabel,
+        frames: sample.frames,
+      });
+    }
   }
 
   if (totalWeight <= 0) {
     return null;
   }
 
-  const topFunctions = [...leafWeights.values()]
+  const hotspots = [...hotspotWeights.values()]
     .sort((left, right) => right.weight - left.weight)
     .slice(0, 6)
-    .map(({ hotspot, weight }) => ({
-      ...hotspot,
-      percent: Math.max(1, Math.round((weight / totalWeight) * 100)),
+    .map((entry) => toHotspotEvidence(entry, totalWeight));
+
+  const topFunctions = hotspots.map((hotspot) => ({
+    name: hotspot.name,
+    percent: hotspot.percent,
+    module: hotspot.module,
+  }));
+
+  const topStacks = [...collapsedWeights.values()]
+    .sort((left, right) => right.weight - left.weight)
+    .slice(0, 6)
+    .map((stack) => ({
+      key: stack.key,
+      weight: Math.max(1, Math.round(stack.weight)),
+      threadLabel: stack.threadLabel,
+      frames: stack.frames.map((frame) => ({ ...frame })),
     }));
 
-  const collapsedStacks = [...collapsedWeights.entries()]
-    .sort((left, right) => right[1] - left[1])
-    .map(([stack, weight]) => `${stack} ${Math.max(1, Math.round(weight))}`)
+  const collapsedStacks = topStacks
+    .map((stack) => `${stack.frames.map((frame) => frame.symbol).join(';')} ${stack.weight}`)
     .join('\n');
 
   return {
@@ -268,7 +381,71 @@ function summarizeStacks(samples: WeightedStack[]): ParsedProfileSummary | null 
     topFunctions,
     collapsedStacks,
     usedRealData: true,
+    evidence: {
+      sourceKind,
+      usedRealData: true,
+      sampleCount: samples.length,
+      stackCount: collapsedWeights.size,
+      threadCount: threadLabels.size,
+      topStacks,
+      hotspots,
+      collapsedStacks,
+    },
   };
+}
+
+function toHotspotEvidence(entry: HotspotAccumulator, totalWeight: number): CollectorHotspotEvidence {
+  const callers = [...entry.callers.values()]
+    .sort((left, right) => right.weight - left.weight)
+    .slice(0, 3)
+    .map((item) => ({ ...item.frame }));
+  const representativeStack = entry.bestStack?.frames.map((frame) => ({ ...frame })) ?? [{ ...entry.leaf }];
+
+  return {
+    name: entry.leaf.symbol,
+    module: entry.leaf.module,
+    percent: Math.max(1, Math.round((entry.weight / totalWeight) * 100)),
+    sampleWeight: Math.max(1, Math.round(entry.weight)),
+    sampleCount: entry.sampleCount,
+    threadCount: entry.threadLabels.size,
+    leaf: { ...entry.leaf },
+    callers,
+    representativeStack,
+    threadLabels: [...entry.threadLabels].sort(),
+  };
+}
+
+function extractSourceLocation(text: string) {
+  const match = text.match(/(?<path>(?:[A-Za-z]:)?[^():\s]+(?:[\\/][^():\s]+)+)(?::(?<line>\d+))?/);
+  if (!match?.groups?.path) {
+    return null;
+  }
+
+  return {
+    index: match.index ?? 0,
+    path: match.groups.path,
+    line: match.groups.line ? Number(match.groups.line) : null,
+  };
+}
+
+function sanitizeSymbol(symbolArea: string) {
+  if (!symbolArea) {
+    return null;
+  }
+
+  const tokens = symbolArea.split(/\s+/).filter(Boolean);
+  const candidate = tokens.at(-1) ?? symbolArea.trim();
+  const normalized = candidate
+    .replace(/^\[[^[\]]+\]$/, '')
+    .replace(/\+0x[0-9a-f]+$/i, '')
+    .replace(/\+0x?[0-9a-f]+\/0x?[0-9a-f]+$/i, '')
+    .trim();
+
+  if (!normalized || normalized === '-' || normalized === 'unknown' || normalized === '[unknown]') {
+    return null;
+  }
+
+  return normalized;
 }
 
 function sanitizeFrameName(name: string | undefined) {
@@ -284,10 +461,24 @@ function sanitizeFrameName(name: string | undefined) {
   return trimmed.replace(/\s+/g, ' ');
 }
 
+function sanitizeThreadLabel(name: string | undefined) {
+  const trimmed = name?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function deriveModuleFromPathOrName(sourcePath: string, symbol: string) {
+  if (sourcePath.includes('/')) {
+    const dirname = path.posix.dirname(sourcePath.replace(/\\/g, '/'));
+    return dirname === '.' ? sourcePath : dirname;
+  }
+
+  return deriveModuleFromName(symbol);
+}
+
 function deriveModuleFromName(name: string) {
   if (name.includes('/')) {
-    const parts = name.split('/');
-    return parts.slice(0, -1).join('/') || 'python';
+    const normalized = name.replace(/\\/g, '/');
+    return path.posix.dirname(normalized);
   }
   if (name.includes('::')) {
     return name.split('::')[0] || 'python';
@@ -296,4 +487,13 @@ function deriveModuleFromName(name: string) {
     return name.split('.').slice(0, -1).join('.') || 'python';
   }
   return 'python';
+}
+
+function basenameOrSelf(value: string) {
+  const normalized = value.replace(/\\/g, '/');
+  return path.posix.basename(normalized) || value;
+}
+
+function frameKey(frame: CollectorFrameEvidence) {
+  return `${frame.symbol}::${frame.module}::${frame.file}::${frame.line ?? 'n/a'}`;
 }

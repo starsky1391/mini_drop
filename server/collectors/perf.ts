@@ -128,6 +128,7 @@ export const perfCollector: CollectorPlugin = {
         summary: collectorReport.summary,
         rawSignal: parsedProfile?.usedRealData ? 'native-stack-sampling:perf-script' : 'native-stack-sampling:fallback',
         workloadReportPath: reportPath,
+        evidence: parsedProfile?.evidence,
       },
       report: {
         scenario: context.scenario,
@@ -139,6 +140,7 @@ export const perfCollector: CollectorPlugin = {
         metrics: collectorReport.metrics,
         topFunctions,
         summary: collectorReport.summary,
+        evidence: parsedProfile?.evidence,
       },
       logs: session.logs,
     };

@@ -23,116 +23,121 @@ export function buildAnalysisNarrative(context: AnalysisContext): AnalysisNarrat
     primaryFinding: `${dominant.name} is the dominant hot path.`,
     analysisSummary: buildAnalysisSummary(context, dominant),
     trendSummary: buildTrendSummary(context.comparison, hotspotMovement, trendDriver),
-    timeline: buildTimeline(context.task.collectorName, context.run.title, context.outcome.logs, context.comparison, hotspotMovement),
-    findings: buildFindings(context.task, context.run.hotspots, context.run.metrics, context.comparison, context.outcome.logs, hotspotMovement, trendDriver),
-    insights: buildInsights(context.run.hotspots, context.run.metrics, context.comparison, context.outcome.logs, hotspotMovement, trendDriver),
+    timeline: buildTimeline(context, hotspotMovement),
+    findings: buildFindings(context, dominant, hotspotMovement, trendDriver),
+    insights: buildInsights(context, dominant, hotspotMovement, trendDriver),
     flameGraph: buildFlameGraph(context.run.title, context.run.hotspots),
     trendDriver,
   };
 }
 
-function buildTimeline(
-  collectorName: string,
-  reportTitle: string,
-  logs: string[],
-  comparison: TaskComparison | null,
-  hotspotMovement: string | null,
-) {
+function buildTimeline(context: AnalysisContext, hotspotMovement: string | null) {
   const start = new Date();
   const stamps = [0, 1100, 2200, 3300].map((offset) => new Date(start.getTime() + offset));
-  const baselineText = comparison
-    ? `${comparison.summary} ${hotspotMovement ?? comparison.changedHotspot}`
+  const baselineText = context.comparison
+    ? `${context.comparison.summary} ${hotspotMovement ?? context.comparison.changedHotspot}`
     : 'No prior baseline was available for this run.';
 
   return [
-    { at: stamps[0].toISOString(), title: 'Real workload launched', detail: `Collector ${collectorName} started a real profiling run.` },
-    { at: stamps[1].toISOString(), title: 'Sampling complete', detail: `The collector captured files and signals for ${reportTitle}.` },
-    { at: stamps[2].toISOString(), title: 'Frames normalized', detail: logs[0] ?? 'Collector logs were captured and normalized for the report.' },
+    {
+      at: stamps[0].toISOString(),
+      title: 'Real workload launched',
+      detail: `Collector ${context.task.collectorName} started a real profiling run.`,
+    },
+    {
+      at: stamps[1].toISOString(),
+      title: 'Sampling complete',
+      detail: `The collector captured files and signals for ${context.run.title}${context.run.usedRealData ? ` across ${Math.max(1, context.run.stackCount)} stack shape(s)` : ''}.`,
+    },
+    {
+      at: stamps[2].toISOString(),
+      title: 'Frames normalized',
+      detail:
+        context.outcome.logs[0] ??
+        `Normalized stack evidence${context.run.threadCount > 0 ? ` spanned ${context.run.threadCount} profiled thread(s)` : ' was captured from the sampled process'}.`,
+    },
     { at: stamps[3].toISOString(), title: 'Trend attributed', detail: baselineText },
   ];
 }
 
 function buildFindings(
-  task: TaskDetail,
-  hotspots: AnalysisContext['run']['hotspots'],
-  metrics: TaskMetrics,
-  comparison: TaskComparison | null,
-  logs: string[],
+  context: AnalysisContext,
+  dominant: NormalizedHotspot,
   hotspotMovement: string | null,
   trendDriver: AnalysisNarrative['trendDriver'],
 ) {
-  const dominant = hotspots[0];
   const findings: TaskFinding[] = [];
 
-  if (dominant) {
-    findings.push({
-      title: `${dominant.name} dominates the sampled stack`,
-      severity: dominant.percent >= 30 ? 'high' : 'medium',
-      evidence: `${dominant.name} accounts for ${dominant.percent}% of the measured time in ${dominant.frame.module}:${dominant.frame.line ?? 'n/a'}.`,
-      recommendation: `Reduce the work done in ${dominant.name} and confirm the share drops below ${Math.max(10, dominant.percent - 10)}% after the fix.`,
-    });
-  }
+  findings.push({
+    title: `${dominant.name} dominates the sampled stack`,
+    severity: dominant.percent >= 30 ? 'high' : 'medium',
+    evidence: `${dominant.name} accounts for ${dominant.percent}% of the measured time in ${dominant.frame.module}:${dominant.frame.line ?? 'n/a'} across ${dominant.sampleCount} sample(s). ${describeRepresentativeStack(dominant)}`,
+    recommendation: `Reduce the work done in ${dominant.name} and confirm the share drops below ${Math.max(10, dominant.percent - 10)}% after the fix.`,
+  });
 
-  if (comparison) {
+  if (context.comparison) {
     findings.push({
-      title: `Baseline comparison is ${comparison.verdict}`,
-      severity: comparison.verdict === 'regression' ? 'high' : comparison.verdict === 'improvement' ? 'medium' : 'info',
-      evidence: `${comparison.summary} ${hotspotMovement ?? comparison.changedHotspot}`,
+      title: `Baseline comparison is ${context.comparison.verdict}`,
+      severity:
+        context.comparison.verdict === 'regression'
+          ? 'high'
+          : context.comparison.verdict === 'improvement'
+            ? 'medium'
+            : 'info',
+      evidence: `${context.comparison.summary} ${hotspotMovement ?? context.comparison.changedHotspot}`,
       recommendation:
-        comparison.verdict === 'regression'
+        context.comparison.verdict === 'regression'
           ? `Investigate ${trendDriver?.label ?? 'the hottest changed metric'} and re-run the same scenario after the patch.`
           : 'Keep the current change set, then re-sample to confirm the trend persists.',
     });
   }
 
   findings.push({
-    title: 'Collector output is consistent with a real sample',
-    severity: logs.length > 0 ? 'medium' : 'info',
-    evidence: `Captured ${hotspots.length} ranked hotspots with CPU ${metrics.cpu}%, blocked ${metrics.blocked}% and GC ${metrics.gc}%.`,
-    recommendation: `Use the captured artifacts from ${task.collectorName} as the reference run for the next comparison.`,
+    title: context.run.usedRealData ? 'Collector output preserved structured stack evidence' : 'Collector output fell back to synthetic hotspot evidence',
+    severity: context.outcome.logs.length > 0 ? 'medium' : 'info',
+    evidence: context.run.usedRealData
+      ? `Captured ${context.run.hotspots.length} ranked hotspots from ${context.run.stackCount} unique stack shape(s)${context.run.threadCount > 0 ? ` across ${context.run.threadCount} thread(s)` : ''}.`
+      : `Captured ${context.run.hotspots.length} ranked hotspots with CPU ${context.run.metrics.cpu}%, blocked ${context.run.metrics.blocked}% and GC ${context.run.metrics.gc}% via fallback sources.`,
+    recommendation: `Use the captured artifacts from ${context.task.collectorName} as the reference run for the next comparison.`,
   });
 
   return findings.slice(0, 3);
 }
 
 function buildInsights(
-  hotspots: AnalysisContext['run']['hotspots'],
-  metrics: TaskMetrics,
-  comparison: TaskComparison | null,
-  logs: string[],
+  context: AnalysisContext,
+  dominant: NormalizedHotspot,
   hotspotMovement: string | null,
   trendDriver: AnalysisNarrative['trendDriver'],
 ) {
-  const dominant = hotspots[0];
-  const cpuDirection = metrics.cpu >= 70 ? 'regressed' : metrics.cpu <= 40 ? 'improved' : 'flat';
+  const cpuDirection =
+    context.run.metrics.cpu >= 70 ? 'regressed' : context.run.metrics.cpu <= 40 ? 'improved' : 'flat';
 
   const insights: TrendInsight[] = [
     {
       title: 'Hotspot concentration',
-      direction: dominant && dominant.percent >= 30 ? 'regressed' : 'improved',
-      evidence: dominant
-        ? `${dominant.name} owns ${dominant.percent}% of sampled time and resolves to ${dominant.frame.file}:${dominant.frame.line ?? 'n/a'}.`
-        : 'No hotspot data was captured.',
-      attribution: dominant ? dominant.frame.sourceHint : 'collector report',
+      direction: dominant.percent >= 30 ? 'regressed' : 'improved',
+      evidence: `${dominant.name} owns ${dominant.percent}% of sampled time and resolves to ${dominant.frame.file}:${dominant.frame.line ?? 'n/a'}. ${describeCallerSpread(dominant)}`,
+      attribution: dominant.frame.sourceHint,
     },
     {
       title: 'Pressure driver',
       direction: trendDriver?.trend ?? cpuDirection,
-      evidence: trendDriver?.evidence ?? `CPU share landed at ${metrics.cpu}% while blocked time sat at ${metrics.blocked}%.`,
+      evidence:
+        trendDriver?.evidence ??
+        `CPU share landed at ${context.run.metrics.cpu}% while blocked time sat at ${context.run.metrics.blocked}%.`,
       attribution: trendDriver?.label ?? 'workload report',
     },
     {
       title: 'Baseline trajectory',
       direction:
-        comparison?.verdict === 'regression'
+        context.comparison?.verdict === 'regression'
           ? 'regressed'
-          : comparison?.verdict === 'improvement'
+          : context.comparison?.verdict === 'improvement'
             ? 'improved'
-            : comparison?.verdict === 'mixed'
-              ? 'flat'
-              : 'flat',
-      evidence: comparison?.summary ?? 'No prior run was available for trend attribution.',
-      attribution: hotspotMovement ?? comparison?.changedHotspot ?? logs[0] ?? 'collector log',
+            : 'flat',
+      evidence: context.comparison?.summary ?? 'No prior run was available for trend attribution.',
+      attribution: hotspotMovement ?? context.comparison?.changedHotspot ?? context.outcome.logs[0] ?? 'collector log',
     },
   ];
 
@@ -143,7 +148,10 @@ function buildAnalysisSummary(context: AnalysisContext, dominant: NormalizedHots
   const secondary = context.run.hotspots[1];
   const source = `${dominant.frame.file}:${dominant.frame.line ?? 'n/a'}`;
   const secondaryText = secondary ? ` Secondary pressure sits on ${secondary.name} at ${secondary.percent}%.` : '';
-  return `${context.run.title} captured ${context.run.sampleCount} samples from ${context.run.sampleSource}. ${context.run.summary} The current dominant hotspot is ${dominant.name} at ${source}.${secondaryText}`;
+  const realSourceText = context.run.usedRealData
+    ? ` Normalization preserved ${context.run.stackCount} stack shape(s)${context.run.threadCount > 0 ? ` across ${context.run.threadCount} thread(s)` : ''}.`
+    : ' The current report is still relying on fallback hotspot evidence.';
+  return `${context.run.title} captured ${context.run.sampleCount} samples from ${context.run.sampleSource}. ${context.run.summary}${realSourceText} The current dominant hotspot is ${dominant.name} at ${source}.${secondaryText}`;
 }
 
 function buildTrendSummary(
@@ -171,7 +179,7 @@ function buildFlameGraph(title: string, hotspots: AnalysisContext['run']['hotspo
       value: hotspot.percent,
       module: hotspot.frame.module,
       color: palette[index % palette.length],
-      children: buildFlameChildren(hotspot.name, hotspot.percent, index, hotspot.supportingFrames.map((frame) => frame.displayName)),
+      children: buildFlameChildren(hotspot.name, hotspot.percent, index, hotspot),
     })),
     { name: 'misc', value: misc, color: '#64748b' },
   ];
@@ -184,12 +192,22 @@ function buildFlameGraph(title: string, hotspots: AnalysisContext['run']['hotspo
   };
 }
 
-function buildFlameChildren(name: string, percent: number, index: number, supportingFrames: string[]) {
+function buildFlameChildren(name: string, percent: number, index: number, hotspot: NormalizedHotspot) {
   const first = Math.max(1, Math.round(percent * 0.62));
   const second = Math.max(1, percent - first);
+  const supportNames = hotspot.supportingFrames.map((frame) => frame.displayName);
+  const representativeNames = hotspot.representativeStack.slice(-3, -1).map((frame) => frame.displayName);
   return [
-    { name: supportingFrames[0] ?? `${name}:core`, value: first, color: palette[(index + 1) % palette.length] },
-    { name: supportingFrames[1] ?? `${name}:support`, value: second, color: palette[(index + 2) % palette.length] },
+    {
+      name: supportNames[0] ?? representativeNames[0] ?? `${name}:core`,
+      value: first,
+      color: palette[(index + 1) % palette.length],
+    },
+    {
+      name: supportNames[1] ?? representativeNames[1] ?? `${name}:support`,
+      value: second,
+      color: palette[(index + 2) % palette.length],
+    },
   ];
 }
 
@@ -237,8 +255,31 @@ function buildFallbackHotspot(primaryFinding: string): NormalizedHotspot {
       line: null,
       sourceHint: 'unknown/module',
     },
+    sampleWeight: 0,
+    sampleCount: 0,
+    threadCount: 0,
+    threadLabels: [],
     supportingFrames: [],
+    representativeStack: [],
   };
+}
+
+function describeRepresentativeStack(hotspot: NormalizedHotspot) {
+  const representative = hotspot.representativeStack.map((frame) => frame.displayName);
+  if (representative.length <= 1) {
+    return `Representative stack stays centered on ${hotspot.name}.`;
+  }
+
+  return `Representative path: ${representative.join(' -> ')}.`;
+}
+
+function describeCallerSpread(hotspot: NormalizedHotspot) {
+  if (hotspot.supportingFrames.length === 0) {
+    return 'No caller spread was retained for this hotspot.';
+  }
+
+  const callers = hotspot.supportingFrames.map((frame) => frame.displayName).slice(0, 3);
+  return `The strongest callers were ${callers.join(', ')}.`;
 }
 
 const palette = ['#1f6feb', '#22c55e', '#f59e0b', '#38bdf8', '#a855f7', '#ef4444'];

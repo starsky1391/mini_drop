@@ -22,6 +22,47 @@ export interface CollectorArtifact {
   label: string;
 }
 
+export interface CollectorFrameEvidence {
+  name: string;
+  symbol: string;
+  module: string;
+  file: string;
+  line: number | null;
+  sourceHint: string;
+  address?: string | null;
+}
+
+export interface CollectorStackEvidence {
+  key: string;
+  weight: number;
+  threadLabel: string | null;
+  frames: CollectorFrameEvidence[];
+}
+
+export interface CollectorHotspotEvidence {
+  name: string;
+  module: string;
+  percent: number;
+  sampleWeight: number;
+  sampleCount: number;
+  threadCount: number;
+  leaf: CollectorFrameEvidence;
+  callers: CollectorFrameEvidence[];
+  representativeStack: CollectorFrameEvidence[];
+  threadLabels: string[];
+}
+
+export interface CollectorProfileEvidence {
+  sourceKind: string;
+  usedRealData: boolean;
+  sampleCount: number;
+  stackCount: number;
+  threadCount: number;
+  topStacks: CollectorStackEvidence[];
+  hotspots: CollectorHotspotEvidence[];
+  collapsedStacks: string;
+}
+
 export interface CollectorSample {
   sampleCount: number;
   topFunctions: TaskDetail['topFunctions'];
@@ -29,6 +70,7 @@ export interface CollectorSample {
   summary: string;
   rawSignal: string;
   workloadReportPath: string;
+  evidence?: CollectorProfileEvidence;
 }
 
 export interface CollectorReport {
@@ -41,6 +83,7 @@ export interface CollectorReport {
   metrics: TaskMetrics;
   topFunctions: TaskDetail['topFunctions'];
   summary: string;
+  evidence?: CollectorProfileEvidence;
 }
 
 export interface CollectorOutcome {
