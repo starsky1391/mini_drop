@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   cancelTask,
+  loadArtifactPreview,
   createTaskAndDispatch,
   loadAuditFeed,
   loadTaskArtifacts,
@@ -59,6 +60,29 @@ export function createTaskRouter() {
     }
 
     res.json(artifacts);
+  });
+
+  router.get('/tasks/:id/artifacts/content', async (req, res) => {
+    const artifactPath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!artifactPath) {
+      res.status(400).json({
+        code: 'artifact_path_required',
+        message: 'Artifact path query parameter is required.',
+      } satisfies ApiErrorResponse);
+      return;
+    }
+
+    const preview = await loadArtifactPreview(req.params.id, artifactPath);
+    if (!preview) {
+      res.status(404).json({ code: 'task_not_found', message: 'Task not found' } satisfies ApiErrorResponse);
+      return;
+    }
+    if ('code' in preview) {
+      res.status(404).json(preview);
+      return;
+    }
+
+    res.json(preview);
   });
 
   router.get('/tasks/:id/audit', async (req, res) => {

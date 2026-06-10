@@ -3,6 +3,7 @@ import type {
   CollectorInfo,
   ScenarioDefinition,
   TaskArtifact,
+  TaskAuditEvent,
   TaskComparison,
   TaskCreateInput,
   TaskDetail,
@@ -24,6 +25,69 @@ type ComparisonResponse = {
   comparison: TaskComparison;
 };
 
+type TaskArtifactsResponse = {
+  taskId: string;
+  artifacts: TaskArtifact[];
+  resultIndex: {
+    taskId: string;
+    target: string;
+    collector: string;
+    scenario: string;
+    status: string;
+    sampleCount: number;
+    sampleSource: string;
+    artifactCount: number;
+    updatedAt: string;
+  };
+};
+
+type TaskAuditResponse = {
+  taskId: string;
+  auditEvents: TaskAuditEvent[];
+};
+
+type ReasonerSnapshot = {
+  input: {
+    taskId: string;
+    evidence: Array<{
+      id: string;
+      kind: string;
+      label: string;
+      detail: string;
+      value?: number | string;
+    }>;
+    guardrails: string[];
+  };
+  output: {
+    mode: 'disabled' | 'stub';
+    summary: string;
+    findings: Array<{
+      title: string;
+      detail: string;
+      citations: string[];
+    }>;
+    citations: string[];
+    generatedAt: string;
+    guardrailStatus: 'enforced';
+  };
+};
+
+type TaskReasonerResponse = {
+  taskId: string;
+  snapshot: ReasonerSnapshot | null;
+};
+
+type ArtifactPreviewResponse = {
+  taskId: string;
+  artifact: TaskArtifact;
+  preview: {
+    mode: 'json' | 'text' | 'unsupported';
+    content: string | null;
+    truncated: boolean;
+    byteLength: number;
+  };
+};
+
 type HotspotMovement = {
   name: string;
   module: string;
@@ -38,6 +102,28 @@ type EvidenceCitation = {
   label: string;
   evidence: string;
 };
+
+type ReasonerView =
+  | {
+      source: 'snapshot';
+      title: string;
+      summary: string;
+      modeLabel: string;
+      bullets: string[];
+      citations: EvidenceCitation[];
+      guardrails: string[];
+      generatedAt: string;
+    }
+  | {
+      source: 'draft';
+      title: string;
+      summary: string;
+      modeLabel: string;
+      bullets: string[];
+      citations: EvidenceCitation[];
+      guardrails: string[];
+      generatedAt: string | null;
+    };
 
 const defaultForm: TaskCreateInput = {
   target: 'orders-api@node-3',
@@ -64,6 +150,10 @@ function formatTime(value: string) {
 
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
+}
+
+function formatAuditType(value: TaskAuditEvent['type']) {
+  return value.replaceAll('.', ' ');
 }
 
 function statusTone(status: TaskSummary['status']) {
@@ -173,7 +263,8 @@ function deriveHotspotMovements(current: TaskDetail | null, baseline: TaskDetail
   const baselineMap = new Map(baseline.topFunctions.map((item) => [item.name, item]));
   const names = Array.from(new Set([...baseline.topFunctions.slice(0, 4).map((item) => item.name), ...current.topFunctions.slice(0, 4).map((item) => item.name)]));
 
-  return names.map((name) => {
+  return names
+    .map((name) => {
     const before = baselineMap.get(name)?.percent ?? 0;
     const after = currentMap.get(name)?.percent ?? 0;
     const delta = Number((after - before).toFixed(1));
@@ -203,7 +294,8 @@ function deriveHotspotMovements(current: TaskDetail | null, baseline: TaskDetail
       tone,
       summary,
     };
-  });
+    })
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 }
 
 function buildReasonerDraft(task: TaskDetail, comparison: TaskComparison | null, baselineTask: TaskDetail | null) {
@@ -260,6 +352,80 @@ function buildReasonerDraft(task: TaskDetail, comparison: TaskComparison | null,
   };
 }
 
+function buildReasonerView(
+  snapshot: ReasonerSnapshot | null,
+  draft: ReturnType<typeof buildReasonerDraft> | null,
+): ReasonerView | null {
+  if (snapshot) {
+    const evidenceMap = new Map(snapshot.input.evidence.map((item) => [item.id, item.detail]));
+    return {
+      source: 'snapshot',
+      title: 'Reasoner snapshot',
+      summary: snapshot.output.summary,
+      modeLabel: snapshot.output.mode === 'stub' ? 'Evidence-grounded stub' : 'Reasoner disabled',
+      bullets:
+        snapshot.output.findings.length > 0
+          ? snapshot.output.findings.map((finding) => `${finding.title}: ${finding.detail}`)
+          : ['No model findings were emitted for this run.'],
+      citations:
+        snapshot.output.citations.length > 0
+          ? snapshot.output.citations.map((citation) => ({
+              label: citation,
+              evidence: evidenceMap.get(citation) ?? 'Citation target not present in the snapshot bundle.',
+            }))
+          : snapshot.input.evidence.slice(0, 4).map((item) => ({ label: item.label, evidence: item.detail })),
+      guardrails: snapshot.input.guardrails,
+      generatedAt: snapshot.output.generatedAt,
+    };
+  }
+
+  if (!draft) {
+    return null;
+  }
+
+  return {
+    source: 'draft',
+    title: draft.title,
+    summary: draft.summary,
+    modeLabel: 'Rule-backed preview',
+    bullets: draft.bullets,
+    citations: draft.citations,
+    guardrails: ['Waiting for a persisted reasoner snapshot or model-backed response.'],
+    generatedAt: null,
+  };
+}
+
+function taskStateMessage(task: TaskDetail, latestAudit: TaskAuditEvent | null) {
+  switch (task.status) {
+    case 'failed':
+      return latestAudit?.detail ?? 'The task failed before a complete diagnosis was produced.';
+    case 'done':
+      return latestAudit?.message ?? 'This run completed and its evidence bundle is ready for review.';
+    case 'analyzing':
+      return 'Collectors have finished sampling and the report is being normalized into findings.';
+    case 'running':
+      return 'A workload is active and collector-side artifacts are still being captured.';
+    default:
+      return 'This run is queued and waiting for execution resources.';
+  }
+}
+
+function prettyPreview(response: ArtifactPreviewResponse | null) {
+  if (!response?.preview.content) {
+    return null;
+  }
+
+  if (response.preview.mode === 'json') {
+    try {
+      return JSON.stringify(JSON.parse(response.preview.content), null, 2);
+    } catch {
+      return response.preview.content;
+    }
+  }
+
+  return response.preview.content;
+}
+
 function FlameGraph({ root }: { root: FlameNode }) {
   const rows = useMemo(() => flattenFlameGraph(root), [root]);
   const height = (maxDepth(root) + 1) * 42 + 12;
@@ -311,7 +477,15 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [baselineId, setBaselineId] = useState<string | null>(null);
   const [comparison, setComparison] = useState<TaskComparison | null>(null);
+  const [artifactBundle, setArtifactBundle] = useState<TaskArtifactsResponse | null>(null);
+  const [auditBundle, setAuditBundle] = useState<TaskAuditResponse | null>(null);
+  const [reasonerBundle, setReasonerBundle] = useState<TaskReasonerResponse | null>(null);
+  const [sidecarLoading, setSidecarLoading] = useState(false);
+  const [sidecarError, setSidecarError] = useState<string | null>(null);
   const [selectedArtifactPath, setSelectedArtifactPath] = useState<string | null>(null);
+  const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResponse | null>(null);
+  const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
+  const [artifactPreviewError, setArtifactPreviewError] = useState<string | null>(null);
   const [form, setForm] = useState<TaskCreateInput>(defaultForm);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -394,8 +568,106 @@ function App() {
   const baselineTask = tasks.find((task) => task.id === baselineId) ?? tasks[1] ?? null;
 
   useEffect(() => {
-    setSelectedArtifactPath(selectedTask?.artifacts[0]?.path ?? null);
-  }, [selectedTask?.id]);
+    let ignore = false;
+
+    async function loadSelectedTaskSidecars() {
+      if (!selectedTask) {
+        setArtifactBundle(null);
+        setAuditBundle(null);
+        setReasonerBundle(null);
+        return;
+      }
+
+      setSidecarLoading(true);
+      setSidecarError(null);
+
+      try {
+        const [artifactsRes, auditRes, reasonerRes] = await Promise.all([
+          fetch(`/api/tasks/${encodeURIComponent(selectedTask.id)}/artifacts`),
+          fetch(`/api/tasks/${encodeURIComponent(selectedTask.id)}/audit`),
+          fetch(`/api/tasks/${encodeURIComponent(selectedTask.id)}/reasoner`),
+        ]);
+
+        const [artifactsData, auditData, reasonerData] = await Promise.all([
+          artifactsRes.ok ? ((await artifactsRes.json()) as TaskArtifactsResponse) : null,
+          auditRes.ok ? ((await auditRes.json()) as TaskAuditResponse) : null,
+          reasonerRes.ok ? ((await reasonerRes.json()) as TaskReasonerResponse) : null,
+        ]);
+
+        if (ignore) {
+          return;
+        }
+
+        setArtifactBundle(artifactsData);
+        setAuditBundle(auditData);
+        setReasonerBundle(reasonerData);
+      } catch (fetchError) {
+        if (!ignore) {
+          setSidecarError(fetchError instanceof Error ? fetchError.message : 'Failed to load task sidecar data');
+        }
+      } finally {
+        if (!ignore) {
+          setSidecarLoading(false);
+        }
+      }
+    }
+
+    void loadSelectedTaskSidecars();
+
+    return () => {
+      ignore = true;
+    };
+  }, [selectedTask?.id, selectedTask?.updatedAt]);
+
+  const activeArtifacts = artifactBundle?.artifacts ?? selectedTask?.artifacts ?? [];
+
+  useEffect(() => {
+    setSelectedArtifactPath(activeArtifacts[0]?.path ?? null);
+  }, [selectedTask?.id, activeArtifacts]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadPreview() {
+      if (!selectedTask || !selectedArtifactPath) {
+        setArtifactPreview(null);
+        setArtifactPreviewError(null);
+        return;
+      }
+
+      setArtifactPreviewLoading(true);
+      setArtifactPreviewError(null);
+
+      try {
+        const response = await fetch(
+          `/api/tasks/${encodeURIComponent(selectedTask.id)}/artifacts/content?path=${encodeURIComponent(selectedArtifactPath)}`,
+        );
+        if (!response.ok) {
+          const body = (await response.json()) as { message?: string };
+          throw new Error(body.message ?? 'Failed to load artifact preview');
+        }
+
+        const data = (await response.json()) as ArtifactPreviewResponse;
+        if (!ignore) {
+          setArtifactPreview(data);
+        }
+      } catch (previewError) {
+        if (!ignore) {
+          setArtifactPreview(null);
+          setArtifactPreviewError(previewError instanceof Error ? previewError.message : 'Failed to load artifact preview');
+        }
+      } finally {
+        if (!ignore) {
+          setArtifactPreviewLoading(false);
+        }
+      }
+    }
+
+    void loadPreview();
+    return () => {
+      ignore = true;
+    };
+  }, [selectedArtifactPath, selectedTask?.id]);
 
   const activeTasks = tasks.filter((task) => task.status === 'running' || task.status === 'queued' || task.status === 'analyzing').length;
   const doneTasks = tasks.filter((task) => task.status === 'done').length;
@@ -418,7 +690,13 @@ function App() {
     [baselineTask, comparison, selectedTask],
   );
 
-  const selectedArtifact = selectedTask?.artifacts.find((artifact) => artifact.path === selectedArtifactPath) ?? selectedTask?.artifacts[0] ?? null;
+  const selectedArtifact = activeArtifacts.find((artifact) => artifact.path === selectedArtifactPath) ?? activeArtifacts[0] ?? null;
+  const latestAudit = auditBundle?.auditEvents[0] ?? null;
+  const reasonerView = useMemo(
+    () => buildReasonerView(reasonerBundle?.snapshot ?? null, reasonerDraft),
+    [reasonerBundle, reasonerDraft],
+  );
+  const artifactPreviewText = useMemo(() => prettyPreview(artifactPreview), [artifactPreview]);
 
   async function submitTask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -635,6 +913,19 @@ function App() {
                 </article>
               </div>
 
+              <div className={`state-banner state-${statusTone(selectedTask.status)}`}>
+                <div>
+                  <span className="preview-label">Run state</span>
+                  <strong>{taskStateMessage(selectedTask, latestAudit)}</strong>
+                </div>
+                <div className="state-banner-meta">
+                  <span>Progress {selectedTask.progress}%</span>
+                  <span>{selectedTask.status === 'failed' ? 'Retry from API once failure handling is reviewed.' : 'Cancellation UI is not wired yet in this worktree.'}</span>
+                </div>
+              </div>
+
+              {sidecarError ? <div className="error-banner">{sidecarError}</div> : null}
+
               <p className="report-summary">{selectedTask.reportSummary}</p>
               <p className="report-summary">{selectedTask.analysisSummary}</p>
 
@@ -735,12 +1026,12 @@ function App() {
             <section className="section-block artifact-panel">
               <div className="section-head">
                 <h2>Artifacts and logs</h2>
-                <span>{selectedTask.artifacts.length} artifacts retained</span>
+                <span>{activeArtifacts.length} artifacts retained</span>
               </div>
 
               <div className="artifact-workspace">
                 <div className="artifact-list">
-                  {selectedTask.artifacts.map((artifact) => (
+                  {activeArtifacts.map((artifact) => (
                     <button
                       key={`${artifact.kind}-${artifact.path}`}
                       className={`artifact-card artifact-${artifactTone(artifact.kind)} ${selectedArtifact?.path === artifact.path ? 'artifact-selected' : ''}`}
@@ -752,7 +1043,7 @@ function App() {
                       </div>
                       <p>{describeArtifact(artifact)}</p>
                       <small>{pathTail(artifact.path)}</small>
-                    </button>
+                  </button>
                   ))}
                 </div>
 
@@ -778,6 +1069,45 @@ function App() {
                           <strong>{artifactPreviewLabel(selectedArtifact)}</strong>
                         </div>
                       </div>
+
+                      {artifactBundle?.resultIndex ? (
+                        <div className="result-index-card">
+                          <div>
+                            <span>Indexed sample source</span>
+                            <strong>{artifactBundle.resultIndex.sampleSource}</strong>
+                          </div>
+                          <div>
+                            <span>Indexed samples</span>
+                            <strong>{artifactBundle.resultIndex.sampleCount}</strong>
+                          </div>
+                          <div>
+                            <span>Indexed artifacts</span>
+                            <strong>{artifactBundle.resultIndex.artifactCount}</strong>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {artifactPreviewLoading ? <p>Loading artifact preview...</p> : null}
+                      {artifactPreviewError ? <div className="error-banner">{artifactPreviewError}</div> : null}
+                      {artifactPreview && !artifactPreviewLoading ? (
+                        artifactPreview.preview.mode === 'unsupported' ? (
+                          <div className="preview-shell">
+                            <strong>Preview unavailable</strong>
+                            <p>This artifact type is preserved for offline tooling rather than inline browser inspection.</p>
+                          </div>
+                        ) : (
+                          <div className="preview-shell">
+                            <div className="preview-shell-head">
+                              <strong>{artifactPreview.preview.mode.toUpperCase()} preview</strong>
+                              <span>
+                                {artifactPreview.preview.byteLength} bytes
+                                {artifactPreview.preview.truncated ? ' · truncated' : ''}
+                              </span>
+                            </div>
+                            <pre>{artifactPreviewText}</pre>
+                          </div>
+                        )
+                      ) : null}
                     </>
                   ) : (
                     <p>Select an artifact card to review how this run was persisted for offline analysis.</p>
@@ -790,6 +1120,31 @@ function App() {
                   </div>
                 </article>
               </div>
+            </section>
+
+            <section className="section-block audit-panel">
+              <div className="section-head">
+                <h2>Audit trail</h2>
+                <span>{auditBundle?.auditEvents.length ?? 0} events</span>
+              </div>
+
+              {sidecarLoading && !auditBundle ? <p className="report-summary">Loading audit trail...</p> : null}
+              {auditBundle?.auditEvents.length ? (
+                <div className="audit-list">
+                  {auditBundle.auditEvents.map((event) => (
+                    <article key={event.id} className={`audit-card audit-${event.severity}`}>
+                      <div className="audit-head">
+                        <strong>{formatAuditType(event.type)}</strong>
+                        <span>{formatTime(event.at)}</span>
+                      </div>
+                      <p>{event.message}</p>
+                      {event.detail ? <small>{event.detail}</small> : null}
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="report-summary">No audit events have been stored for this task yet.</p>
+              )}
             </section>
 
             <section className="section-block flame-panel">
@@ -844,28 +1199,36 @@ function App() {
               </div>
             </section>
 
-            {reasonerDraft ? (
+            {reasonerView ? (
               <section className="section-block reasoner-panel">
                 <div className="section-head">
-                  <h2>{reasonerDraft.title}</h2>
-                  <span>Rule-backed until API model is connected</span>
+                  <h2>{reasonerView.title}</h2>
+                  <span>{reasonerView.modeLabel}</span>
                 </div>
 
                 <div className="reasoner-shell">
                   <article className="reasoner-summary">
                     <span>Draft summary</span>
-                    <strong>{reasonerDraft.summary}</strong>
+                    <strong>{reasonerView.summary}</strong>
                     <ul className="reasoner-bullets">
-                      {reasonerDraft.bullets.map((bullet) => (
+                      {reasonerView.bullets.map((bullet) => (
                         <li key={bullet}>{bullet}</li>
                       ))}
                     </ul>
+                    <div className="guardrail-list">
+                      {reasonerView.guardrails.map((guardrail) => (
+                        <small key={guardrail}>{guardrail}</small>
+                      ))}
+                    </div>
+                    {reasonerView.generatedAt ? (
+                      <small className="generated-at">Generated at {formatTime(reasonerView.generatedAt)}</small>
+                    ) : null}
                   </article>
 
                   <article className="citation-panel">
                     <span>Evidence citations</span>
                     <div className="citation-list">
-                      {reasonerDraft.citations.map((citation) => (
+                      {reasonerView.citations.map((citation) => (
                         <div key={citation.label} className="citation-card">
                           <strong>{citation.label}</strong>
                           <p>{citation.evidence}</p>
