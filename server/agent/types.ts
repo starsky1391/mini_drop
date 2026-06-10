@@ -37,6 +37,8 @@ export interface AgentRunSnapshot {
   startedAt: string;
   updatedAt: string;
   stopRequested: boolean;
+  stopRequestedAt?: string;
+  stopReason?: string;
   cleanupHookCount: number;
   probe: AgentEnvironmentProbe | null;
   logs: string[];

@@ -150,6 +150,28 @@ export async function listTaskArtifacts(taskId: string) {
   return stored?.artifacts ?? normalized;
 }
 
+export async function getTaskArtifactBundle(taskId: string) {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
+
+  const normalized = await normalizeArtifacts(taskId, task.artifacts);
+  const stored = await readArtifactIndex(taskId);
+  if (stored) {
+    return stored;
+  }
+
+  return {
+    taskId,
+    artifacts: normalized,
+    resultIndex: createTaskResultIndex({
+      ...task,
+      artifacts: normalized,
+    }),
+  };
+}
+
 export async function listAuditEvents(taskId?: string) {
   const state = await readState();
   const events = taskId ? state.auditEvents.filter((event) => event.taskId === taskId) : state.auditEvents;

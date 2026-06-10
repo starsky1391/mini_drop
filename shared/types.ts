@@ -15,6 +15,8 @@ export type AuditEventType =
   | 'task.updated'
   | 'task.status_changed'
   | 'task.execution_dispatched'
+  | 'task.stop_requested'
+  | 'task.stopped'
   | 'task.artifacts_indexed'
   | 'task.validation_failed'
   | 'task.failed';
