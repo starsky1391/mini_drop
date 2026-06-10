@@ -124,6 +124,7 @@ export const pySpyCollector: CollectorPlugin = {
         summary: collectorReport.summary,
         rawSignal: parsedProfile?.usedRealData ? 'python-stack-sampling:py-spy' : 'python-stack-sampling:fallback',
         workloadReportPath: reportPath,
+        evidence: parsedProfile?.evidence,
       },
       report: {
         scenario: context.scenario,
@@ -135,6 +136,7 @@ export const pySpyCollector: CollectorPlugin = {
         metrics: collectorReport.metrics,
         topFunctions,
         summary: collectorReport.summary,
+        evidence: parsedProfile?.evidence,
       },
       logs: session.logs,
     };

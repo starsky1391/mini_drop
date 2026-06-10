@@ -1,4 +1,9 @@
-import type { CollectorOutcome } from '../collectors/types.js';
+import type {
+  CollectorFrameEvidence,
+  CollectorOutcome,
+  CollectorProfileEvidence,
+  CollectorStackEvidence,
+} from '../collectors/types.js';
 import type {
   ComparisonTrend,
   FlameNode,
@@ -25,7 +30,12 @@ export interface NormalizedHotspot {
   module: string;
   rank: number;
   frame: SymbolizedFrame;
+  sampleWeight: number;
+  sampleCount: number;
+  threadCount: number;
+  threadLabels: string[];
   supportingFrames: SymbolizedFrame[];
+  representativeStack: SymbolizedFrame[];
 }
 
 export interface NormalizedRun {
@@ -34,7 +44,19 @@ export interface NormalizedRun {
   metrics: TaskMetrics;
   sampleCount: number;
   sampleSource: string;
+  usedRealData: boolean;
+  sourceKind: string;
+  threadCount: number;
+  stackCount: number;
   hotspots: NormalizedHotspot[];
+  topStacks: NormalizedStack[];
+}
+
+export interface NormalizedStack {
+  key: string;
+  weight: number;
+  threadLabel: string | null;
+  frames: SymbolizedFrame[];
 }
 
 export interface AnalysisContext {
@@ -61,4 +83,37 @@ export interface AnalysisNarrative {
   insights: TrendInsight[];
   flameGraph: FlameNode;
   trendDriver: TrendDriver | null;
+}
+
+export function symbolizeCollectorFrame(frame: CollectorFrameEvidence): SymbolizedFrame {
+  return {
+    displayName: frame.name,
+    symbol: frame.symbol,
+    module: frame.module,
+    file: frame.file,
+    line: frame.line,
+    sourceHint: frame.sourceHint,
+  };
+}
+
+export function normalizeStackEvidence(stack: CollectorStackEvidence): NormalizedStack {
+  return {
+    key: stack.key,
+    weight: stack.weight,
+    threadLabel: stack.threadLabel,
+    frames: stack.frames.map(symbolizeCollectorFrame),
+  };
+}
+
+export function placeholderProfileEvidence(sourceKind: string): CollectorProfileEvidence {
+  return {
+    sourceKind,
+    usedRealData: false,
+    sampleCount: 0,
+    stackCount: 0,
+    threadCount: 0,
+    topStacks: [],
+    hotspots: [],
+    collapsedStacks: '',
+  };
 }
