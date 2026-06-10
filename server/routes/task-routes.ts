@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  cancelTask,
   createTaskAndDispatch,
   loadAuditFeed,
   loadTaskArtifacts,
@@ -7,6 +8,8 @@ import {
   loadTaskComparison,
   loadTaskDetail,
   loadTaskList,
+  loadTaskReasoner,
+  loadTaskRunState,
   parseTaskListFilters,
   validateTaskCreateInput,
 } from '../services/task-service.js';
@@ -68,6 +71,26 @@ export function createTaskRouter() {
     res.json(audit);
   });
 
+  router.get('/tasks/:id/reasoner', async (req, res) => {
+    const reasoner = await loadTaskReasoner(req.params.id);
+    if (!reasoner) {
+      res.status(404).json({ code: 'task_not_found', message: 'Task not found' } satisfies ApiErrorResponse);
+      return;
+    }
+
+    res.json(reasoner);
+  });
+
+  router.get('/tasks/:id/run-state', async (req, res) => {
+    const runState = await loadTaskRunState(req.params.id);
+    if (!runState) {
+      res.status(404).json({ code: 'task_not_found', message: 'Task not found' } satisfies ApiErrorResponse);
+      return;
+    }
+
+    res.json(runState);
+  });
+
   router.get('/audit', async (req, res) => {
     const taskId = typeof req.query.taskId === 'string' ? req.query.taskId : undefined;
     res.json(await loadAuditFeed(taskId));
@@ -82,6 +105,24 @@ export function createTaskRouter() {
 
     const created = await createTaskAndDispatch(parsed.value);
     res.status(201).json(created);
+  });
+
+  router.post('/tasks/:id/cancel', async (req, res) => {
+    const canceled = await cancelTask(req.params.id);
+    if (!canceled) {
+      res.status(404).json({ code: 'task_not_found', message: 'Task not found' } satisfies ApiErrorResponse);
+      return;
+    }
+
+    if (!canceled.accepted) {
+      res.status(409).json({
+        code: 'task_already_terminal',
+        message: canceled.reason,
+      } satisfies ApiErrorResponse);
+      return;
+    }
+
+    res.json(canceled);
   });
 
   return router;

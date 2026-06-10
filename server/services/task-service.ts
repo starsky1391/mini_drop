@@ -3,14 +3,15 @@ import { createQueuedTask } from '../analysis.js';
 import { compareTasks } from '../comparison.js';
 import {
   appendAuditEvent,
-  createTaskResultIndex,
+  getTaskArtifactBundle,
   getTask,
+  getTaskReasonerSnapshot,
   listAuditEvents,
-  listTaskArtifacts,
   listTasks,
   saveTask,
 } from '../store.js';
-import { runTaskExecution } from '../execution.js';
+import { cancelTaskExecution, runTaskExecution } from '../execution.js';
+import { getAgentRunSnapshot, getPendingStopRequest } from '../agent/run-registry.js';
 import { isCollectorId, isScenarioId } from '../../shared/catalog.js';
 import type {
   ApiErrorResponse,
@@ -179,20 +180,7 @@ export async function loadTaskComparison(taskId: string, otherId: string): Promi
 }
 
 export async function loadTaskArtifacts(taskId: string): Promise<TaskArtifactsResponse | null> {
-  const task = await getTask(taskId);
-  if (!task) {
-    return null;
-  }
-
-  const artifacts = (await listTaskArtifacts(taskId)) ?? [];
-  return {
-    taskId,
-    artifacts,
-    resultIndex: createTaskResultIndex({
-      ...task,
-      artifacts,
-    }),
-  };
+  return (await getTaskArtifactBundle(taskId)) ?? null;
 }
 
 export async function loadTaskAudit(taskId: string): Promise<TaskAuditResponse | null> {
@@ -211,4 +199,35 @@ export async function loadAuditFeed(taskId?: string) {
   return {
     auditEvents: await listAuditEvents(taskId),
   };
+}
+
+export async function loadTaskReasoner(taskId: string) {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
+
+  return {
+    taskId,
+    snapshot: await getTaskReasonerSnapshot(taskId),
+  };
+}
+
+export async function loadTaskRunState(taskId: string) {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
+
+  return {
+    taskId,
+    taskStatus: task.status,
+    activeRun: getAgentRunSnapshot(taskId),
+    stopPending: Boolean(getPendingStopRequest(taskId)),
+  };
+}
+
+export async function cancelTask(taskId: string) {
+  const result = await cancelTaskExecution(taskId, 'Stop requested via API.', 'api');
+  return result;
 }

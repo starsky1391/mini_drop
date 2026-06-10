@@ -18,9 +18,11 @@ interface AgentRunRecord {
 }
 
 const runs = new Map<string, AgentRunRecord>();
+const pendingStops = new Map<string, { reason: string; requestedAt: string }>();
 
 export function createAgentRunController(taskId: string, input: TaskCreateInput): AgentRunController {
   const now = new Date().toISOString();
+  const pendingStop = pendingStops.get(taskId) ?? null;
   const record: AgentRunRecord = {
     snapshot: {
       taskId,
@@ -28,13 +30,19 @@ export function createAgentRunController(taskId: string, input: TaskCreateInput)
       stage: 'created',
       startedAt: now,
       updatedAt: now,
-      stopRequested: false,
+      stopRequested: pendingStop !== null,
+      stopRequestedAt: pendingStop?.requestedAt,
+      stopReason: pendingStop?.reason,
       cleanupHookCount: 0,
       probe: null,
       logs: [`agent run created for ${input.collector} on ${input.target}`],
     },
     cleanup: [],
   };
+
+  if (pendingStop) {
+    record.snapshot.logs.push(`[stop-requested] ${pendingStop.reason}`);
+  }
 
   runs.set(taskId, record);
 
@@ -87,6 +95,12 @@ export function createAgentRunController(taskId: string, input: TaskCreateInput)
     },
     async requestStop(reason: string) {
       record.snapshot.stopRequested = true;
+      record.snapshot.stopRequestedAt = new Date().toISOString();
+      record.snapshot.stopReason = reason;
+      pendingStops.set(taskId, {
+        reason,
+        requestedAt: record.snapshot.stopRequestedAt,
+      });
       appendLog(`[stop-requested] ${reason}`);
       await drainCleanupHooks(record);
       touch('stopped');
@@ -98,6 +112,7 @@ export function createAgentRunController(taskId: string, input: TaskCreateInput)
       await drainCleanupHooks(record);
       touch('completed');
       runs.delete(taskId);
+      pendingStops.delete(taskId);
     },
     async fail(error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown agent execution error';
@@ -105,6 +120,7 @@ export function createAgentRunController(taskId: string, input: TaskCreateInput)
       await drainCleanupHooks(record);
       touch('failed');
       runs.delete(taskId);
+      pendingStops.delete(taskId);
     },
   };
 }
@@ -118,6 +134,45 @@ export function getAgentRunSnapshot(taskId: string) {
   return {
     ...record.snapshot,
     logs: [...record.snapshot.logs],
+  };
+}
+
+export function getPendingStopRequest(taskId: string) {
+  return pendingStops.get(taskId) ?? null;
+}
+
+export function clearPendingStopRequest(taskId: string) {
+  pendingStops.delete(taskId);
+}
+
+export async function requestAgentRunStop(taskId: string, reason: string) {
+  const requestedAt = new Date().toISOString();
+  pendingStops.set(taskId, { reason, requestedAt });
+
+  const record = runs.get(taskId);
+  if (!record) {
+    return {
+      accepted: true,
+      active: false,
+      snapshot: null,
+    };
+  }
+
+  record.snapshot.stopRequested = true;
+  record.snapshot.stopRequestedAt = requestedAt;
+  record.snapshot.stopReason = reason;
+  record.snapshot.updatedAt = requestedAt;
+  record.snapshot.logs.push(`[stop-requested] ${reason}`);
+
+  await drainCleanupHooks(record);
+
+  return {
+    accepted: true,
+    active: true,
+    snapshot: {
+      ...record.snapshot,
+      logs: [...record.snapshot.logs],
+    },
   };
 }
 
