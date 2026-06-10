@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createQueuedTask } from '../analysis.js';
 import { compareTasks } from '../comparison.js';
@@ -5,6 +7,7 @@ import {
   appendAuditEvent,
   createTaskResultIndex,
   getTask,
+  getTaskReasonerSnapshot,
   listAuditEvents,
   listTaskArtifacts,
   listTasks,
@@ -26,6 +29,7 @@ import type {
 } from '../../shared/types.js';
 
 const validStatuses: TaskStatus[] = ['queued', 'running', 'analyzing', 'done', 'failed'];
+const previewByteLimit = 64 * 1024;
 
 type ValidationResult<T> =
   | { ok: true; value: T }
@@ -211,4 +215,74 @@ export async function loadAuditFeed(taskId?: string) {
   return {
     auditEvents: await listAuditEvents(taskId),
   };
+}
+
+export async function loadTaskReasoner(taskId: string) {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
+
+  return {
+    taskId,
+    snapshot: await getTaskReasonerSnapshot(taskId),
+  };
+}
+
+export async function loadArtifactPreview(taskId: string, artifactPath: string) {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
+
+  const artifacts = (await listTaskArtifacts(taskId)) ?? [];
+  const artifact = artifacts.find((item) => item.path === artifactPath);
+  if (!artifact) {
+    return {
+      code: 'artifact_not_found',
+      message: 'Artifact not found for the selected task.',
+    } satisfies ApiErrorResponse;
+  }
+
+  const preview = await readArtifactPreview(artifact.path);
+  return {
+    taskId,
+    artifact,
+    preview,
+  };
+}
+
+async function readArtifactPreview(filePath: string) {
+  const mode = inferPreviewMode(filePath);
+  if (mode === 'unsupported') {
+    return {
+      mode,
+      content: null,
+      truncated: false,
+      byteLength: 0,
+    };
+  }
+
+  const raw = await fs.readFile(filePath, 'utf8');
+  const byteLength = Buffer.byteLength(raw, 'utf8');
+  const truncated = byteLength > previewByteLimit;
+  const content = truncated ? raw.slice(0, previewByteLimit) : raw;
+
+  return {
+    mode,
+    content,
+    truncated,
+    byteLength,
+  };
+}
+
+function inferPreviewMode(filePath: string) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.json') {
+    return 'json' as const;
+  }
+  if (['.txt', '.log', '.data', '.folded', '.collapsed'].includes(ext) || ext === '') {
+    return 'text' as const;
+  }
+  return 'unsupported' as const;
 }
