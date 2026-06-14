@@ -2,14 +2,24 @@
   "version": "0.10.1.dev0",
   "integration_state_schema": 1,
   "installed_integrations": [
-    "codex"
+    "claude",
+    "codex",
+    "hermes"
   ],
   "integration_settings": {
+    "claude": {
+      "script": "sh",
+      "invoke_separator": "-"
+    },
     "codex": {
+      "script": "sh",
+      "invoke_separator": "-"
+    },
+    "hermes": {
       "script": "sh",
       "invoke_separator": "-"
     }
   },
-  "integration": "codex",
-  "default_integration": "codex"
+  "integration": "claude",
+  "default_integration": "claude"
 }

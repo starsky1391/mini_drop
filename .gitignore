@@ -1,8 +1,12 @@
 node_modules/
 dist/
+build/
 data/
 .DS_Store
 Thumbs.db
 *.log
+*.tmp
 .env*
 .vite/
+.tmp/
+config/local-ai-models.json

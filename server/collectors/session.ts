@@ -17,6 +17,9 @@ export function createCollectorSession(taskId: string, prefix: string, notes: st
       artifacts.push({ kind, path, label });
       return path;
     },
+    listArtifacts() {
+      return artifacts.map((artifact) => ({ ...artifact }));
+    },
     async writeTextArtifact(kind: CollectorArtifact['kind'], suffix: string, content: string, label: string) {
       const path = await writeArtifact(taskId, `${artifactLabel(prefix, suffix)}${extensionForKind(kind)}`, content);
       artifacts.push({ kind, path, label });

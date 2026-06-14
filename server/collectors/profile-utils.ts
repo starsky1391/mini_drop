@@ -162,6 +162,89 @@ export function parseSpeedscopeProfile(text: string): ParsedProfileSummary | nul
   return summarizeStacks(samples, 'speedscope');
 }
 
+export function parseCollapsedStacks(text: string, sourceKind = 'collapsed-stacks'): ParsedProfileSummary | null {
+  const lines = text
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const samples: WeightedStack[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^(?<stack>.+?)\s+(?<weight>\d+(?:\.\d+)?)$/);
+    if (!match?.groups?.stack || !match.groups.weight) {
+      continue;
+    }
+
+    const weight = Math.max(1, Math.round(Number(match.groups.weight) || 0));
+    const frames = match.groups.stack
+      .split(';')
+      .map(parseCollapsedFrame)
+      .filter((frame): frame is ParsedFrame => frame !== null);
+
+    if (frames.length === 0) {
+      continue;
+    }
+
+    samples.push({
+      frames,
+      weight,
+      threadLabel: null,
+    });
+  }
+
+  return summarizeStacks(samples, sourceKind);
+}
+
+export function parseBpftraceSnapshot(text: string): ParsedProfileSummary | null {
+  const lines = text
+    .split(/\r?\n/g)
+    .map((line) => line.replace(/\t/g, '    '))
+    .map((line) => line.trimEnd());
+  const samples: WeightedStack[] = [];
+  let currentFrames: ParsedFrame[] = [];
+  let currentThreadLabel: string | null = null;
+
+  const flushFrames = (weight: number) => {
+    if (currentFrames.length === 0 || weight <= 0) {
+      currentFrames = [];
+      currentThreadLabel = null;
+      return;
+    }
+
+    samples.push({
+      frames: currentFrames.slice(),
+      weight,
+      threadLabel: currentThreadLabel,
+    });
+    currentFrames = [];
+    currentThreadLabel = null;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (/^@\[[^\]]+\]:?$/.test(trimmed)) {
+      currentThreadLabel = sanitizeThreadLabel(trimmed.replace(/^@\[/, '').replace(/\]:?$/, ''));
+      continue;
+    }
+
+    if (/^\d+$/.test(trimmed)) {
+      flushFrames(Math.max(1, Number(trimmed)));
+      continue;
+    }
+
+    const parsedFrame = parseBpftraceFrame(trimmed);
+    if (parsedFrame) {
+      currentFrames.push(parsedFrame);
+    }
+  }
+
+  return summarizeStacks(samples, 'bpftrace-raw');
+}
+
 export function mergeHotspots(primary: Hotspot[], fallback: Hotspot[], limit = 4): Hotspot[] {
   const ordered: Hotspot[] = [];
   const seen = new Set<string>();
@@ -249,7 +332,89 @@ function parsePerfFrame(line: string): ParsedFrame | null {
     file,
     line: source?.line ?? null,
     sourceHint,
+    mappingState: classifyMappingState({
+      hasFile: Boolean(source?.path),
+      hasLine: source?.line !== null && source?.line !== undefined,
+      module: moduleName,
+    }),
+    mappingSource: source?.path ? 'retained' : moduleName.includes('/') || moduleName.includes('\\') ? 'derived-path' : 'fallback',
     address,
+  };
+}
+
+function parseCollapsedFrame(token: string): ParsedFrame | null {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const source = extractCollapsedSource(trimmed);
+  const symbolArea = source ? trimmed.slice(0, source.index).trim() : trimmed;
+  const symbol = sanitizeSymbol(symbolArea) ?? sanitizeFrameName(symbolArea);
+  if (!symbol) {
+    return null;
+  }
+
+  const sourcePath = source?.path ?? deriveModuleFromName(symbol);
+  const module = deriveModuleFromPathOrName(sourcePath, symbol);
+  const file = source?.path ? basenameOrSelf(source.path) : basenameOrSelf(module);
+
+  return {
+    name: symbol,
+    symbol,
+    module,
+    file,
+    line: source?.line ?? null,
+    sourceHint: sourcePath,
+    mappingState: classifyMappingState({
+      hasFile: Boolean(source?.path) || Boolean(file && file !== module),
+      hasLine: source?.line !== null && source?.line !== undefined,
+      module,
+      syntheticHint: !source?.path,
+    }),
+    mappingSource: source?.path ? 'retained' : 'derived-symbol',
+    address: null,
+  };
+}
+
+function parseBpftraceFrame(token: string): ParsedFrame | null {
+  const trimmed = token.trim();
+  if (!trimmed || /^\d+$/.test(trimmed)) {
+    return null;
+  }
+
+  const withoutPrefix = trimmed.replace(/^user:\s*/i, '').replace(/^kernel:\s*/i, '').trim();
+  const normalized = withoutPrefix.replace(/^\d+\s+/, '');
+  const source = extractSourceLocation(normalized);
+  const sourcePath = source?.path ?? '';
+  const baseArea = source ? normalized.slice(0, source.index).trim() : normalized;
+  const moduleSplit = baseArea.includes('`') ? baseArea.split('`') : baseArea.includes(':') ? baseArea.split(':') : [baseArea];
+  const moduleCandidate = moduleSplit.length > 1 ? moduleSplit[0]?.trim() || 'kernel' : deriveModuleFromName(baseArea);
+  const symbolArea = moduleSplit.length > 1 ? moduleSplit.slice(1).join('`').trim() : baseArea.trim();
+  const symbol = sanitizeSymbol(symbolArea) ?? sanitizeFrameName(symbolArea);
+  if (!symbol) {
+    return null;
+  }
+
+  const sourceHint = sourcePath || moduleCandidate;
+  const file = sourcePath ? basenameOrSelf(sourcePath) : basenameOrSelf(moduleCandidate);
+  const hasExplicitPath = Boolean(sourcePath);
+
+  return {
+    name: symbol,
+    symbol,
+    module: moduleCandidate,
+    file,
+    line: source?.line ?? null,
+    sourceHint,
+    mappingState: classifyMappingState({
+      hasFile: hasExplicitPath || Boolean(file && file !== moduleCandidate),
+      hasLine: source?.line !== null && source?.line !== undefined,
+      module: moduleCandidate,
+      syntheticHint: !hasExplicitPath && moduleCandidate.toLowerCase().includes('unknown'),
+    }),
+    mappingSource: hasExplicitPath ? 'retained' : 'derived-symbol',
+    address: null,
   };
 }
 
@@ -270,6 +435,13 @@ function toFrames(indexes: number[], frames: SpeedscopeFrame[]): ParsedFrame[] {
         file: basenameOrSelf(sourcePath),
         line: typeof frame?.line === 'number' ? frame.line : null,
         sourceHint: sourcePath,
+        mappingState: classifyMappingState({
+          hasFile: Boolean(frame?.file?.trim()),
+          hasLine: typeof frame?.line === 'number',
+          module: deriveModuleFromPathOrName(sourcePath, symbol),
+          syntheticHint: !frame?.file?.trim(),
+        }),
+        mappingSource: frame?.file?.trim() ? 'retained' : 'derived-symbol',
         address: null,
       } as ParsedFrame;
     })
@@ -428,6 +600,19 @@ function extractSourceLocation(text: string) {
   };
 }
 
+function extractCollapsedSource(text: string) {
+  const match = text.match(/\((?<path>[^()]+?)(?::(?<line>\d+))?\)$/);
+  if (!match?.groups?.path) {
+    return null;
+  }
+
+  return {
+    index: match.index ?? 0,
+    path: match.groups.path.trim(),
+    line: match.groups.line ? Number(match.groups.line) : null,
+  };
+}
+
 function sanitizeSymbol(symbolArea: string) {
   if (!symbolArea) {
     return null;
@@ -496,4 +681,26 @@ function basenameOrSelf(value: string) {
 
 function frameKey(frame: CollectorFrameEvidence) {
   return `${frame.symbol}::${frame.module}::${frame.file}::${frame.line ?? 'n/a'}`;
+}
+
+function classifyMappingState(input: {
+  hasFile: boolean;
+  hasLine: boolean;
+  module: string;
+  syntheticHint?: boolean;
+}) {
+  const normalizedModule = input.module.toLowerCase();
+  if (input.hasFile && input.hasLine) {
+    return 'full' as const;
+  }
+  if (input.hasFile) {
+    return 'file-only' as const;
+  }
+  if (input.syntheticHint || normalizedModule.includes('synthetic') || normalizedModule.includes('unknown')) {
+    return 'synthetic' as const;
+  }
+  if (normalizedModule && !normalizedModule.includes('unknown')) {
+    return 'module-only' as const;
+  }
+  return 'unknown' as const;
 }

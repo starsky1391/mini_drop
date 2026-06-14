@@ -1,10 +1,10 @@
 import type { ComparisonTrend, MetricDelta, TaskDetail, TaskMetrics } from '../../shared/types.js';
 
 const metricLabels: Record<keyof TaskMetrics, string> = {
-  cpu: 'CPU pressure',
-  blocked: 'Blocked time',
-  gc: 'GC pressure',
-  syscalls: 'Syscall share',
+  cpu: 'CPU 压力',
+  blocked: '阻塞时间',
+  gc: 'GC 压力',
+  syscalls: 'Syscall 占比',
 };
 
 const metricDirection: Record<keyof TaskMetrics, boolean> = {
@@ -49,8 +49,8 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
   if (!baselineTop && !currentTop) {
     return {
       kind: 'stable',
-      summary: 'Hotspot movement could not be determined because both runs lacked ranked stacks.',
-      attribution: 'No comparable hotspot data was available.',
+      summary: '两次运行都没有保留可排序栈，因此暂时无法判断热点迁移。',
+      attribution: '当前没有可比较的热点数据。',
       emphasis: 'flat' as ComparisonTrend,
     };
   }
@@ -58,8 +58,22 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
   if (baselineTop?.name === currentTop?.name && baselineTop.module !== currentTop?.module) {
     return {
       kind: 'module-shifted',
-      summary: `Hotspot stayed on ${currentTop.name} but moved from ${baselineTop.module} to ${currentTop.module}.`,
-      attribution: `${currentTop.name} still leads the profile, but the dominant source location rotated to a different module.`,
+      summary: `热点仍然是 ${formatHotspotName(currentTop)}，但位置从 ${formatHotspotLocation(baselineTop)} 移动到了 ${formatHotspotLocation(currentTop)}。`,
+      attribution: `${formatHotspotName(currentTop)} 依旧主导画像，但主要来源位置已经切换到新的模块或符号化位置。`,
+      emphasis: 'regressed' as ComparisonTrend,
+    };
+  }
+
+  if (
+    baselineTop?.name === currentTop?.name &&
+    baselineTop.locationSummary &&
+    currentTop?.locationSummary &&
+    baselineTop.locationSummary !== currentTop.locationSummary
+  ) {
+    return {
+      kind: 'module-shifted',
+      summary: `热点仍然是 ${formatHotspotName(currentTop)}，但可读位置从 ${baselineTop.locationSummary} 变成了 ${currentTop.locationSummary}。`,
+      attribution: `${formatHotspotName(currentTop)} 仍然占主导，但两次运行映射出的代码位置已经发生变化。`,
       emphasis: 'regressed' as ComparisonTrend,
     };
   }
@@ -69,24 +83,24 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
     if (delta >= 6) {
       return {
         kind: 'intensified',
-        summary: `Hotspot stayed on ${currentTop?.name ?? 'the same path'} and intensified by ${delta.toFixed(1)}%.`,
-        attribution: `${currentTop?.name ?? 'The dominant path'} concentrated more sampled time while neighboring hotspots stayed secondary.`,
+        summary: `热点仍然集中在 ${formatHotspotName(currentTop)}（${formatHotspotLocation(currentTop)}），占比上升了 ${delta.toFixed(1)}%。`,
+        attribution: `${formatHotspotName(currentTop)} 吸收了更多采样时间，周边热点仍处于次要位置。`,
         emphasis: 'regressed' as ComparisonTrend,
       };
     }
     if (delta <= -6) {
       return {
         kind: 'cooled',
-        summary: `Hotspot stayed on ${currentTop?.name ?? 'the same path'} but cooled by ${Math.abs(delta).toFixed(1)}%.`,
-        attribution: `${currentTop?.name ?? 'The dominant path'} still leads the stack, but its share dropped enough to suggest dispersion.`,
+        summary: `热点仍然集中在 ${formatHotspotName(currentTop)}（${formatHotspotLocation(currentTop)}），但占比下降了 ${Math.abs(delta).toFixed(1)}%。`,
+        attribution: `${formatHotspotName(currentTop)} 虽然还在栈顶，但占比已经明显回落，说明压力开始分散。`,
         emphasis: 'improved' as ComparisonTrend,
       };
     }
 
     return {
       kind: 'anchored',
-      summary: `Hotspot remains anchored on ${currentTop?.name ?? 'the same path'}.`,
-      attribution: `${currentTop?.name ?? 'The dominant path'} stayed on top with ${shared.length} supporting hotspots preserved across both runs.`,
+      summary: `热点稳定锚定在 ${formatHotspotName(currentTop)}（${formatHotspotLocation(currentTop)}）。`,
+      attribution: `${formatHotspotName(currentTop)} 持续位于首位，并且两次运行保留了 ${shared.length} 个共同支撑热点。`,
       emphasis: 'flat' as ComparisonTrend,
     };
   }
@@ -95,8 +109,8 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
     const previousRank = baseline.topFunctions.findIndex((item) => item.name === currentTop?.name);
     return {
       kind: 'reordered',
-      summary: `Hotspot leadership shifted from ${baselineTop?.name ?? 'n/a'} to ${currentTop?.name ?? 'n/a'} within the same hotspot cluster.`,
-      attribution: `${shared.join(', ')} remained in the top stack set, so the profile likely reordered existing pressure instead of introducing a brand-new path${previousRank >= 0 ? `; ${currentTop?.name ?? 'the current leader'} climbed from rank ${previousRank + 1}` : ''}.`,
+      summary: `主热点在同一组热点簇中从 ${formatHotspotName(baselineTop)} 切换成了 ${formatHotspotName(currentTop)}。`,
+      attribution: `${shared.join(', ')} 仍然留在头部栈集合中，因此更像是已有压力重新排序，而不是出现了全新的执行路径${previousRank >= 0 ? `；${formatHotspotName(currentTop)} 是从第 ${previousRank + 1} 位升上来的` : ''}。`,
       emphasis: 'flat' as ComparisonTrend,
     };
   }
@@ -104,16 +118,16 @@ export function describeHotspotMovement(baseline: TaskDetail, current: TaskDetai
   if (overlap > 0) {
     return {
       kind: 'shifted',
-      summary: `Hotspot shifted from ${baselineTop?.name ?? 'n/a'} to ${currentTop?.name ?? 'n/a'}.`,
-      attribution: `Only ${shared.length} hotspot(s) overlapped, which suggests pressure moved toward ${currentTop?.module ?? 'a new module'}.`,
+      summary: `主热点从 ${formatHotspotName(baselineTop)}（${formatHotspotLocation(baselineTop)}）迁移到了 ${formatHotspotName(currentTop)}（${formatHotspotLocation(currentTop)}）。`,
+      attribution: `只有 ${shared.length} 个热点仍然重合，说明压力正在向 ${formatHotspotLocation(currentTop)} 转移。`,
       emphasis: 'regressed' as ComparisonTrend,
     };
   }
 
   return {
     kind: 'replaced',
-    summary: `Hotspot completely rotated from ${baselineTop?.name ?? 'n/a'} to ${currentTop?.name ?? 'n/a'}.`,
-    attribution: `The leading stack set no longer overlaps, so a fresh execution path likely became dominant in ${currentTop?.module ?? 'a new module'}.`,
+    summary: `主热点已经从 ${formatHotspotName(baselineTop)} 完全轮换成 ${formatHotspotName(currentTop)}。`,
+    attribution: `头部栈集合已经没有重合，说明新的执行路径很可能在 ${formatHotspotLocation(currentTop)} 成为了主导。`,
     emphasis: 'regressed' as ComparisonTrend,
   };
 }
@@ -161,4 +175,12 @@ function classifyMetricTrend(delta: number, higherIsBetter: boolean): Comparison
 
   const improved = higherIsBetter ? delta > 0 : delta < 0;
   return improved ? 'improved' : 'regressed';
+}
+
+function formatHotspotName(hotspot: TaskDetail['topFunctions'][number] | null) {
+  return hotspot?.name ?? 'n/a';
+}
+
+function formatHotspotLocation(hotspot: TaskDetail['topFunctions'][number] | null) {
+  return hotspot?.locationSummary ?? hotspot?.module ?? '未知热点位置';
 }

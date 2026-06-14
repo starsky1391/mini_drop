@@ -11,7 +11,7 @@
         "agy": [
           "speckit.agent-context.update"
         ],
-        "codex": [
+        "claude": [
           "speckit.agent-context.update"
         ]
       },

@@ -3,12 +3,13 @@ import { promises as fs } from 'node:fs';
 import { promisify } from 'node:util';
 import { getScenario } from '../../shared/catalog.js';
 import type { CollectorOutcome, CollectorPlugin } from './types.js';
-import { artifactLabel, artifactPath, ensureArtifactDir } from './runtime-utils.js';
+import { artifactLabel, artifactPath, ensureArtifactDir, ensureArtifactFile } from './runtime-utils.js';
 import { readWorkloadReport, startWorkloadProcess } from './workload.js';
 import { resolveRuntimeProfile } from './scenario-runtime.js';
 import { buildCollapsedFromHotspots, mergeHotspots, parsePerfScript } from './profile-utils.js';
 import type { ParsedProfileSummary } from './profile-utils.js';
 import { createCollectorSession } from './session.js';
+import { persistCollectionPathDecision } from './collection-path.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,19 +27,36 @@ export const perfCollector: CollectorPlugin = {
     const durationSeconds = Math.max(5, Math.ceil(profile.durationMs / 1000));
     const session = createCollectorSession(context.taskId, 'perf', profile.notes);
     await ensureArtifactDir(context.taskId);
+    const shouldTryExternalAttach = Boolean(profile.requestedPid && profile.processInfo);
 
     const reportFile = artifactPath(context.taskId, `${artifactLabel('workload', 'report')}.json`);
-    const workload = await startWorkloadProcess({
-      scenario: context.scenario,
-      collector: context.collector,
-      durationSeconds,
-      reportFile,
-      target: context.target,
-    });
-    session.log('prepare', `workload pid=${workload.pid}`);
+    let workload: Awaited<ReturnType<typeof startWorkloadProcess>> | null = null;
+    const ensureManagedFallbackWorkload = async () => {
+      if (workload) {
+        return workload;
+      }
+      workload = await startWorkloadProcess({
+        scenario: context.scenario,
+        collector: context.collector,
+        durationSeconds,
+        reportFile,
+        target: context.target,
+      });
+      session.log('prepare', `${shouldTryExternalAttach ? 'fallback ' : ''}workload pid=${workload.pid}`);
+      return workload;
+    };
+
+    const attachPid = shouldTryExternalAttach ? (profile.requestedPid ?? profile.targetPid) : (await ensureManagedFallbackWorkload()).pid;
+    if (shouldTryExternalAttach) {
+      session.log('prepare', `external target pid=${attachPid} (${profile.processInfo?.commandSummary ?? profile.targetCommand})`);
+    }
 
     const perfDataPath = artifactPath(context.taskId, `${artifactLabel('perf', 'record')}.data`);
     let parsedProfile: ParsedProfileSummary | null = null;
+    let collectionCommand: string | null = null;
+    let commandError: string | null = null;
+    let perfDataRecovered = false;
+    let scriptOutputHadFrames = false;
 
     try {
       if (process.platform === 'linux') {
@@ -50,24 +68,41 @@ export const perfCollector: CollectorPlugin = {
           '-o',
           perfDataPath,
           '-p',
-          String(workload.pid),
+          String(attachPid),
           '--',
           'sleep',
           String(durationSeconds),
         ];
+        collectionCommand = `perf ${recordArgs.join(' ')}`;
         const perfRecord = await execFileAsync('perf', recordArgs);
         session.log('capture', perfRecord.stderr?.trim() || 'perf record completed.');
+        const retention = await ensureArtifactFile(
+          perfDataPath,
+          'perf record completed without a retained perf.data payload; placeholder retained for audit.',
+        );
+        perfDataRecovered = retention.recovered;
+        session.addArtifact('raw', perfDataPath, 'perf.data');
+        if (retention.recovered) {
+          session.log('fallback', 'perf record completed but no retained perf.data payload was found; placeholder persisted.');
+        }
 
         const perfScript = await execFileAsync('perf', ['script', '-i', perfDataPath]);
-        const scriptPath = await session.writeTextArtifact('raw', 'script', perfScript.stdout, 'perf script output');
-        parsedProfile = parsePerfScript(perfScript.stdout);
+        scriptOutputHadFrames = perfScript.stdout.trim().length > 0;
+        const scriptPath = await session.writeTextArtifact(
+          'raw',
+          'script',
+          scriptOutputHadFrames
+            ? perfScript.stdout
+            : 'perf script completed without emitting stack frames; fallback normalization was used.',
+          'perf script output',
+        );
+        parsedProfile = scriptOutputHadFrames ? parsePerfScript(perfScript.stdout) : null;
         session.log(
           parsedProfile?.usedRealData ? 'normalize' : 'fallback',
           parsedProfile?.usedRealData
             ? `perf script normalized into ${parsedProfile.sampleCount} stack samples.`
             : 'perf script was captured but did not yield parseable stack samples.',
         );
-        session.addArtifact('raw', perfDataPath, 'perf.data');
         session.log('capture', `raw script saved at ${scriptPath}`);
       } else {
         await fs.writeFile(perfDataPath, 'perf unsupported on this platform, falling back to synthetic stacks.', 'utf8');
@@ -75,18 +110,28 @@ export const perfCollector: CollectorPlugin = {
         session.log('fallback', 'perf is not available on this platform; fallback sample file created.');
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'perf command failed';
-      session.log('fallback', `perf execution fallback: ${message}`);
-      await fs.writeFile(perfDataPath, `perf unavailable: ${message}`, 'utf8');
+      commandError = error instanceof Error ? error.message : 'perf command failed';
+      session.log('fallback', `perf execution fallback: ${commandError}`);
+      await fs.writeFile(perfDataPath, `perf unavailable: ${commandError}`, 'utf8');
       session.addArtifact('raw', perfDataPath, 'perf.data');
     }
 
-    const [completion, workloadStdout, workloadStderr] = await Promise.all([
-      workload.completion,
-      workload.stdout,
-      workload.stderr,
-    ]);
-    const fallbackReport = completion.report ?? (await readWorkloadReport(reportFile));
+    const collectionAssessment = assessPerfCollection({
+      platform: process.platform,
+      command: collectionCommand,
+      commandError,
+      perfDataRecovered,
+      scriptOutputHadFrames,
+      parsedProfile,
+      requestedPid: profile.requestedPid,
+      usedManagedFallback: !shouldTryExternalAttach,
+    });
+    const fallbackWorkload =
+      collectionAssessment.mode === 'real' && !shouldTryExternalAttach ? workload : collectionAssessment.mode === 'real' ? null : await ensureManagedFallbackWorkload();
+    const [completion, workloadStdout, workloadStderr] = fallbackWorkload
+      ? await Promise.all([fallbackWorkload.completion, fallbackWorkload.stdout, fallbackWorkload.stderr])
+      : [{ code: 0, signal: null, report: null }, '', ''];
+    const fallbackReport = completion.report ?? (fallbackWorkload ? await readWorkloadReport(reportFile) : null);
     const report = fallbackReport ?? buildSyntheticReport(context.collector, context.target, scenario.name, scenario.topFunctions[0].name, durationSeconds);
     const topFunctions = mergeHotspots(parsedProfile?.topFunctions ?? [], report.top_functions, 4);
     const collectorReport = {
@@ -94,6 +139,8 @@ export const perfCollector: CollectorPlugin = {
       top_functions: topFunctions,
       summary: parsedProfile?.usedRealData
         ? `${report.summary} Real perf stacks were parsed from ${parsedProfile.sampleCount} samples.`
+        : collectionAssessment.mode === 'partial-real'
+          ? `${report.summary} perf retained raw native artifacts, but hotspot shaping still relies on fallback interpretation.`
         : `${report.summary} Synthetic or workload-derived hotspots were used as a fallback.`,
     };
     const collapsedStacks =
@@ -107,6 +154,16 @@ export const perfCollector: CollectorPlugin = {
 
     const reportPath = await session.writeJsonArtifact('report', 'collector-report', collectorReport, 'Collector report');
     await session.writeTextArtifact('collapsed-stacks', 'collapsed', collapsedStacks, 'Collapsed stacks');
+    await persistCollectionPathDecision(session, {
+      collector: context.collector,
+      mode: collectionAssessment.mode,
+      command: collectionCommand,
+      reason: collectionAssessment.reason,
+      sourceKind: collectionAssessment.sourceKind,
+      rawSignal: collectionAssessment.rawSignal,
+      expectedArtifacts: ['perf.data', 'perf script output', 'Collapsed stacks', 'Collector report', 'Collection path summary'],
+      notes: collectionAssessment.notes,
+    });
     if (workloadStdout.trim()) {
       await session.writeTextArtifact('log', 'workload-stdout', workloadStdout, 'workload stdout');
     }
@@ -118,7 +175,7 @@ export const perfCollector: CollectorPlugin = {
 
     const sampleCount = parsedProfile?.sampleCount ?? Math.max(1, Math.round(collectorReport.duration_ms / 32));
     return {
-      status: 'analyzing',
+      status: 'UPLOADING',
       progress: 72,
       artifacts: session.artifacts,
       sample: {
@@ -126,7 +183,7 @@ export const perfCollector: CollectorPlugin = {
         topFunctions,
         metrics: collectorReport.metrics,
         summary: collectorReport.summary,
-        rawSignal: parsedProfile?.usedRealData ? 'native-stack-sampling:perf-script' : 'native-stack-sampling:fallback',
+        rawSignal: collectionAssessment.rawSignal,
         workloadReportPath: reportPath,
         evidence: parsedProfile?.evidence,
       },
@@ -143,6 +200,23 @@ export const perfCollector: CollectorPlugin = {
         evidence: parsedProfile?.evidence,
       },
       logs: session.logs,
+      targetContext: {
+        attachSource:
+          collectionAssessment.mode === 'real' || collectionAssessment.mode === 'partial-real'
+            ? context.targetContext.attachSource
+            : shouldTryExternalAttach
+              ? 'managed-fallback'
+              : 'managed-workload',
+        attachDecision:
+          collectionAssessment.mode === 'real'
+            ? `perf 直接 attach 到 PID ${attachPid} 并保留了真实样本。`
+            : collectionAssessment.mode === 'partial-real'
+              ? `perf 直接 attach 到 PID ${attachPid} 并保留了 perf.data / script 产物，但热点排序仍有 fallback 成分。`
+            : shouldTryExternalAttach
+              ? `perf 未能稳定 attach 到 PID ${attachPid}，已回退到 managed workload 保留证据。`
+              : 'perf 通过 managed workload 路径完成采样。',
+        processInfo: shouldTryExternalAttach ? profile.processInfo : null,
+      },
     };
   },
 };
@@ -184,4 +258,78 @@ function scenarioMetrics(title: string) {
     return { cpu: 72, blocked: 7, gc: 5, syscalls: 6 };
   }
   return { cpu: 91, blocked: 4, gc: 2, syscalls: 3 };
+}
+
+interface PerfCollectionAssessmentInput {
+  platform: NodeJS.Platform;
+  command: string | null;
+  commandError: string | null;
+  perfDataRecovered: boolean;
+  scriptOutputHadFrames: boolean;
+  parsedProfile: Pick<ParsedProfileSummary, 'usedRealData' | 'sampleCount' | 'evidence'> | null;
+  requestedPid?: number | null;
+  usedManagedFallback?: boolean;
+}
+
+export function assessPerfCollection(input: PerfCollectionAssessmentInput) {
+  const targetQualifier = input.requestedPid ? ` for PID ${input.requestedPid}` : '';
+  const fallbackSourceKind = input.requestedPid ? 'managed-workload-fallback' : 'workload-fallback';
+
+  if (input.platform !== 'linux') {
+    return {
+      mode: 'fallback' as const,
+      reason: `perf requires Linux, so the collector emitted fallback artifacts on this platform${targetQualifier}.`,
+      sourceKind: fallbackSourceKind,
+      rawSignal: 'native-stack-sampling:fallback',
+      notes: ['perf is unavailable on this platform, so workload-shaped fallback evidence was retained.'],
+    };
+  }
+
+  if (input.commandError) {
+    return {
+      mode: 'fallback' as const,
+      reason: `perf command execution failed${targetQualifier}: ${input.commandError}`,
+      sourceKind: fallbackSourceKind,
+      rawSignal: 'native-stack-sampling:fallback',
+      notes: ['perf command execution failed before a normalized native stack profile could be retained.'],
+    };
+  }
+
+  if (input.perfDataRecovered) {
+    return {
+      mode: 'fallback' as const,
+      reason: `perf record completed${targetQualifier}, but ${input.command ?? 'perf'} did not retain a usable perf.data payload.`,
+      sourceKind: fallbackSourceKind,
+      rawSignal: 'native-stack-sampling:fallback',
+      notes: ['A placeholder perf.data artifact was retained so the fallback path remains auditable.'],
+    };
+  }
+
+  if (!input.scriptOutputHadFrames) {
+    return {
+      mode: 'partial-real' as const,
+      reason: `perf record completed${targetQualifier}, and perf.data was retained, but perf script did not emit stack frames that could be normalized.`,
+      sourceKind: input.requestedPid ? 'external-perf-data' : 'perf-data',
+      rawSignal: 'native-stack-sampling:perf-data:partial',
+      notes: ['perf.data and the retained script artifact remain available for audit, but hotspot shaping still fell back to workload-derived interpretation.'],
+    };
+  }
+
+  if (input.parsedProfile?.usedRealData) {
+    return {
+      mode: 'real' as const,
+      reason: `perf record and perf script completed${targetQualifier} with ${input.parsedProfile.sampleCount} normalized stack sample(s).`,
+      sourceKind: input.requestedPid ? 'external-perf-script' : input.parsedProfile.evidence.sourceKind,
+      rawSignal: 'native-stack-sampling:perf-script',
+      notes: [`Normalized ${input.parsedProfile.sampleCount} stack sample(s) from perf script.`],
+    };
+  }
+
+  return {
+    mode: 'partial-real' as const,
+    reason: `perf commands completed${targetQualifier}, but the retained script output did not fully normalize into structured stack evidence.`,
+    sourceKind: input.requestedPid ? 'external-perf-script' : input.parsedProfile?.evidence.sourceKind ?? 'perf-script',
+    rawSignal: 'native-stack-sampling:perf-script:partial',
+    notes: ['Retained perf artifacts are real, but the post-processing path still depends on fallback hotspot shaping.'],
+  };
 }

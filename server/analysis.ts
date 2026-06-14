@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { getCollector, getScenario } from '../shared/catalog.js';
 import type { CollectorOutcome } from './collectors/types.js';
 import type {
+  TaskAttachSource,
   TaskComparison,
   TaskCreateInput,
   TaskDetail,
+  TaskTargetContext,
   TaskSummary,
 } from '../shared/types.js';
 import { buildAnalysisNarrative, buildQueuedTimeline } from './analysis/narrative.js';
@@ -21,18 +23,42 @@ function buildSummary(input: TaskCreateInput): TaskSummary {
 
   return {
     id: randomUUID(),
-    title: `${scenario.name} on ${input.target}`,
+    title: `${scenario.displayNameZh ?? scenario.name} · ${input.target}`,
     target: input.target,
+    targetContext: buildTargetContext(input),
     language: input.language,
     collector: collector.id,
-    collectorName: collector.name,
+    collectorName: collector.displayNameZh ?? collector.name,
     scenario: scenario.id,
-    scenarioName: scenario.name,
-    status: 'queued',
+    scenarioName: scenario.displayNameZh ?? scenario.name,
+    status: 'PENDING',
+    statusReason: '任务已经创建，正在等待执行资源。',
+    uploadState: 'not_started',
     progress: 8,
     createdAt,
     updatedAt: createdAt,
-    signal: scenario.signal,
+    signal: scenario.signalZh ?? scenario.signal,
+  };
+}
+
+function buildTargetContext(input: TaskCreateInput): TaskTargetContext {
+  const targetType = input.targetType ?? 'label';
+  const attachSource =
+    input.attachSource ??
+    (targetType === 'pid'
+      ? ('external-pid' satisfies TaskAttachSource)
+      : targetType === 'process'
+        ? ('process-selection' satisfies TaskAttachSource)
+        : ('managed-workload' satisfies TaskAttachSource));
+
+  return {
+    targetType,
+    attachSource,
+    processInfo: input.processInfo ?? null,
+    attachDecision:
+      attachSource === 'managed-workload'
+        ? '任务将按 managed workload 路径准备采样。'
+        : `任务会优先尝试直接 attach 到 PID ${input.processInfo?.pid ?? input.pid ?? 'unknown'}。`,
   };
 }
 
@@ -42,12 +68,12 @@ export function createQueuedTask(input: TaskCreateInput): TaskDetail {
 
   return {
     ...summary,
-    reportTitle: `${scenario.name} diagnosis`,
-    reportSummary: 'Waiting for a real collector run.',
+    reportTitle: `${scenario.displayNameZh ?? scenario.name} 诊断`,
+    reportSummary: '等待真实采集结果。',
     primaryFinding: scenario.primaryFinding,
     confidence: scenario.confidence,
     metrics: { cpu: 0, blocked: 0, gc: 0, syscalls: 0 },
-    timeline: buildQueuedTimeline(scenario.signal),
+    timeline: buildQueuedTimeline(scenario.signalZh ?? scenario.signal),
     findings: [],
     topFunctions: scenario.topFunctions,
     flameGraph: scenario.flameGraph,
@@ -55,8 +81,8 @@ export function createQueuedTask(input: TaskCreateInput): TaskDetail {
     sampleSource: 'pending',
     artifacts: [],
     collectorLogs: [],
-    analysisSummary: 'The task is queued and awaiting real sampling output.',
-    trendSummary: 'Trend analysis will appear after the first run completes.',
+    analysisSummary: '任务已经入队，正在等待真实采样结果。',
+    trendSummary: '首轮运行完成后，这里会出现趋势分析。',
     insights: [],
     baselineComparison: null,
   };
@@ -66,7 +92,7 @@ export function createTaskDetail(input: TaskCreateInput): TaskDetail {
   const scenario = getScenario(input.scenario);
   const queued = createQueuedTask(input);
   const outcome: CollectorOutcome = {
-    status: 'analyzing',
+    status: 'UPLOADING',
     progress: 72,
     artifacts: [],
     sample: {
@@ -79,14 +105,14 @@ export function createTaskDetail(input: TaskCreateInput): TaskDetail {
         syscalls: scenario.syscalls,
       },
       summary: scenario.summary,
-      rawSignal: scenario.signal === 'Python Hot Loop' ? 'python-stack-sampling' : 'native-stack-sampling',
+      rawSignal: scenario.id === 'python_hot_loop' ? 'python-stack-sampling' : 'native-stack-sampling',
       workloadReportPath: '',
     },
     report: {
       scenario: input.scenario,
       collector: input.collector,
       target: input.target,
-      title: scenario.name,
+      title: scenario.displayNameZh ?? scenario.name,
       durationMs: 8000,
       result: 1,
       metrics: {
@@ -98,7 +124,7 @@ export function createTaskDetail(input: TaskCreateInput): TaskDetail {
       topFunctions: scenario.topFunctions,
       summary: scenario.summary,
     },
-    logs: ['Synthetic compatibility task created for legacy callers.'],
+    logs: ['已为兼容旧调用方生成 synthetic 任务样本。'],
   };
 
   return finalizeTask(queued, outcome, null);
@@ -119,10 +145,12 @@ export function finalizeTask(
 
   return {
     ...task,
-    status: 'done',
+    status: 'DONE',
+    statusReason: '采样、上传和分析已经完成。',
+    uploadState: 'uploaded',
     progress: 100,
     updatedAt: nowIso(),
-    reportTitle: `${run.title} diagnosis`,
+    reportTitle: `${run.title} 诊断`,
     reportSummary: run.summary,
     primaryFinding: narrative.primaryFinding,
     confidence: narrative.confidence,
@@ -133,6 +161,13 @@ export function finalizeTask(
       name: hotspot.name,
       percent: hotspot.percent,
       module: hotspot.module,
+      locationSummary: formatHotspotLocation(hotspot.frame),
+      file: hotspot.frame.file,
+      line: hotspot.frame.line,
+      mappingState: hotspot.frame.mappingState,
+      mappingSource: hotspot.frame.mappingSource,
+      sourceHint: hotspot.frame.sourceHint,
+      representativeStack: hotspot.representativeStack.map((frame) => formatHotspotLocation(frame)),
     })),
     flameGraph: narrative.flameGraph,
     sampleCount: run.sampleCount,
@@ -144,4 +179,31 @@ export function finalizeTask(
     insights: narrative.insights,
     baselineComparison,
   };
+}
+
+export function summarizeContinuousSlice(task: Pick<TaskDetail, 'target' | 'collector' | 'scenario' | 'sampleCount' | 'status' | 'topFunctions'>) {
+  const hotspot = task.topFunctions[0];
+  return `${task.target} · ${task.collector} · ${task.scenario} 在 ${task.status} 状态下保留了 ${task.sampleCount} 个样本，主热点为 ${hotspot?.name ?? 'unknown'}。`;
+}
+
+function formatHotspotLocation(frame: {
+  module: string;
+  file: string;
+  line: number | null;
+  sourceHint: string;
+  mappingState: string;
+}) {
+  if (frame.mappingState === 'full') {
+    return `${frame.file}:${frame.line}`;
+  }
+  if (frame.mappingState === 'file-only') {
+    return `${frame.file}（没有行号）`;
+  }
+  if (frame.mappingState === 'module-only') {
+    return `${frame.module}（仅模块级）`;
+  }
+  if (frame.mappingState === 'synthetic') {
+    return `${frame.module}（synthetic fallback）`;
+  }
+  return `${frame.sourceHint || frame.module}（未映射）`;
 }

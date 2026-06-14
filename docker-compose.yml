@@ -1,0 +1,46 @@
+services:
+  mini-drop-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      NODE_ENV: "production"
+      MINI_DROP_REASONER_MODE: "${MINI_DROP_REASONER_MODE:-stub}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/health').then((response)=>{if(!response.ok) throw new Error(String(response.status));}).catch((error)=>{console.error(error instanceof Error ? error.message : String(error)); process.exit(1);});",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - mini-drop-data:/app/data
+
+  mini-drop-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "dist/server/server/agent/index.js"]
+    depends_on:
+      mini-drop-server:
+        condition: service_healthy
+    environment:
+      MINI_DROP_AGENT_ID: "docker-agent-1"
+      MINI_DROP_AGENT_LABEL: "docker-agent"
+      MINI_DROP_AGENT_BASE_URL: "http://mini-drop-server:8787"
+      MINI_DROP_AGENT_POLL_MS: "1200"
+      MINI_DROP_AGENT_HEARTBEAT_MS: "4000"
+      MINI_DROP_REASONER_MODE: "${MINI_DROP_REASONER_MODE:-stub}"
+    volumes:
+      - mini-drop-data:/app/data
+
+volumes:
+  mini-drop-data:

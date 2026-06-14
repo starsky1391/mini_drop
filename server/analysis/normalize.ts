@@ -18,7 +18,7 @@ export function normalizeCollectorOutcome(task: TaskDetail, outcome: CollectorOu
   const sourceEntries = evidence.hotspots.length
     ? evidence.hotspots
     : (outcome.report.topFunctions.length ? outcome.report.topFunctions : fallbackHotspots).map((entry, index) => {
-        const leaf = symbolizeFallback(entry.name, entry.module, index);
+        const leaf = symbolizeFallback(entry.name, entry.module);
         return {
           name: entry.name,
           module: entry.module,
@@ -34,6 +34,8 @@ export function normalizeCollectorOutcome(task: TaskDetail, outcome: CollectorOu
             file: leaf.file,
             line: leaf.line,
             sourceHint: leaf.sourceHint,
+            mappingState: leaf.mappingState,
+            mappingSource: leaf.mappingSource,
           },
           callers: [],
           representativeStack: [
@@ -44,6 +46,8 @@ export function normalizeCollectorOutcome(task: TaskDetail, outcome: CollectorOu
               file: leaf.file,
               line: leaf.line,
               sourceHint: leaf.sourceHint,
+              mappingState: leaf.mappingState,
+              mappingSource: leaf.mappingSource,
             },
           ],
         };
@@ -78,22 +82,27 @@ export function normalizeCollectorOutcome(task: TaskDetail, outcome: CollectorOu
   };
 }
 
-function symbolizeFallback(name: string, modulePath: string, rank: number) {
+function symbolizeFallback(name: string, modulePath: string) {
   const normalizedModule = modulePath || 'unknown/module';
   const normalizedSource = normalizedModule.replace(/\\/g, '/');
   const segments = normalizedSource.split('/').filter(Boolean);
   const file = segments.at(-1) ?? normalizedModule;
   const sourceHint = segments.length > 1 ? segments.slice(0, -1).join('/') : normalizedSource;
-  const syntheticLine = inferSyntheticLine(name, rank);
   const symbol = demangleSymbol(name);
+  const mappingState =
+    normalizedModule.toLowerCase().includes('unknown') || normalizedModule.toLowerCase().includes('synthetic')
+      ? ('synthetic' as const)
+      : ('module-only' as const);
 
   return {
     displayName: name,
     symbol,
     module: normalizedModule,
     file,
-    line: syntheticLine,
+    line: null,
     sourceHint,
+    mappingState,
+    mappingSource: 'fallback' as const,
   };
 }
 
@@ -101,14 +110,15 @@ function demangleSymbol(symbol: string) {
   return symbol.replace(/::/g, ' -> ').replace(/_/g, ' ');
 }
 
-function inferSyntheticLine(name: string, rank: number) {
-  const seed = name.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  return 40 + ((seed + rank * 17) % 220);
-}
-
 function inferSourceKind(rawSignal: string) {
+  if (rawSignal.includes('bpftrace')) {
+    return rawSignal.includes(':raw') ? 'bpftrace-raw' : 'bpftrace-normalized';
+  }
+  if (rawSignal.includes('async-profiler')) {
+    return 'async-profiler-collapsed';
+  }
   if (rawSignal.includes('perf')) {
-    return 'perf-script';
+    return rawSignal.includes('perf-data') ? 'perf-data' : 'perf-script';
   }
   if (rawSignal.includes('py-spy')) {
     return 'speedscope';

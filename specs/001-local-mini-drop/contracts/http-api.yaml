@@ -1,0 +1,1925 @@
+openapi: 3.1.0
+info:
+  title: Local Mini-Drop HTTP API
+  version: 0.1.0
+  description: >
+    Contract for the local Mini-Drop browser workflow. This contract documents the
+    user-facing service surfaces needed to create diagnosis tasks, inspect richer
+    evidence, compare runs, review retained provenance, and understand grounded
+    diagnostic output. The current Linux-demo-ready round also reserves shared
+    contract space for agent coordination, upload-state visibility, and
+    continuous profiling data structures used by the Linux-first demo path.
+servers:
+  - url: http://localhost:8787
+paths:
+  /api/health:
+    get:
+      summary: Read service health
+      responses:
+        '200':
+          description: Service health summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/catalog:
+    get:
+      summary: Read available collectors and scenarios
+      responses:
+        '200':
+          description: Catalog response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogResponse'
+  /api/processes:
+    get:
+      summary: List local processes available for diagnosis selection
+      responses:
+        '200':
+          description: Process list response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessListResponse'
+  /api/agents:
+    get:
+      summary: List known agents and their heartbeat state
+      responses:
+        '200':
+          description: Agent list response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+  /api/agents/register:
+    post:
+      summary: Register or refresh an independent Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRegisterRequest'
+      responses:
+        '201':
+          description: Agent accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationResponse'
+  /api/agents/{agentId}/heartbeat:
+    post:
+      summary: Refresh agent heartbeat and optional task context
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentHeartbeatRequest'
+      responses:
+        '200':
+          description: Heartbeat accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationResponse'
+  /api/agents/{agentId}/poll-task:
+    post:
+      summary: Ask the server for the next queued diagnosis task
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Lease result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPollTaskResponse'
+  /api/agents/{agentId}/upload-result:
+    post:
+      summary: Report artifact upload or staging progress for an agent-owned task
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentUploadResultRequest'
+      responses:
+        '200':
+          description: Upload update accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentUploadResultResponse'
+  /api/tasks:
+    get:
+      summary: List diagnosis tasks
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+    post:
+      summary: Create a diagnosis task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskCreateRequest'
+      responses:
+        '201':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - task
+                properties:
+                  task:
+                    $ref: '#/components/schemas/TaskDetail'
+        '400':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/tasks/{taskId}/compare/{baselineId}:
+    get:
+      summary: Compare a task against a compatible baseline
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - name: baselineId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Comparison result
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - comparison
+                properties:
+                  comparison:
+                    $ref: '#/components/schemas/TaskComparison'
+        '404':
+          description: Task or baseline not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/tasks/{taskId}/artifacts:
+    get:
+      summary: List retained artifacts for a task
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Artifact bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskArtifactsResponse'
+  /api/tasks/{taskId}/artifacts/content:
+    get:
+      summary: Preview one artifact for a task
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Artifact preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactPreviewResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/tasks/{taskId}/audit:
+    get:
+      summary: Read audit records for a task
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Audit bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskAuditResponse'
+  /api/tasks/{taskId}/reasoner:
+    get:
+      summary: Read reasoner output for a task
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Reasoner bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskReasonerResponse'
+  /api/tasks/{taskId}/trends:
+    get:
+      summary: Read trend history for a task scope
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Trend bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskTrendsResponse'
+  /api/tasks/{taskId}/continuous-profile:
+    get:
+      summary: Read continuous profiling slices for one task or its history scope
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - name: scope
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - task
+              - history
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Continuous profiling window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContinuousProfileWindowResponse'
+  /api/tasks/{taskId}/run-state:
+    get:
+      summary: Read managed runner state for a task when available
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Managed runner state bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskRunStateResponse'
+components:
+  parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    TaskUploadState:
+      type: string
+      enum:
+        - not_started
+        - uploading
+        - uploaded
+        - upload_failed
+    HealthResponse:
+      type: object
+      required:
+        - ok
+        - service
+        - collectors
+        - scenarios
+      properties:
+        ok:
+          type: boolean
+        service:
+          type: string
+        collectors:
+          type: integer
+        scenarios:
+          type: integer
+    CatalogResponse:
+      type: object
+      required:
+        - collectors
+        - scenarios
+        - targetTypes
+        - collectorNotes
+        - collectorReadiness
+      properties:
+        collectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorInfo'
+        scenarios:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScenarioDefinition'
+        targetTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetTypeOption'
+        collectorNotes:
+          type: array
+          items:
+            type: string
+        collectorReadiness:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorRuntimeReadiness'
+    TaskCreateRequest:
+      type: object
+      required:
+        - language
+        - collector
+        - scenario
+      properties:
+        target:
+          type: string
+        targetType:
+          type: string
+          enum:
+            - label
+            - pid
+            - process
+        pid:
+          type: integer
+        processInfo:
+          $ref: '#/components/schemas/TaskProcessInfo'
+        language:
+          type: string
+        collector:
+          type: string
+        scenario:
+          type: string
+    TargetTypeOption:
+      type: object
+      required:
+        - id
+        - label
+        - description
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+    TaskProcessInfo:
+      type: object
+      required:
+        - pid
+        - name
+        - command
+        - commandSummary
+        - languageHint
+      properties:
+        pid:
+          type: integer
+        name:
+          type: string
+        command:
+          type: string
+        commandSummary:
+          type: string
+        languageHint:
+          nullable: true
+          type: string
+        discoveredAt:
+          type: string
+          format: date-time
+        alive:
+          type: boolean
+    TaskTargetContext:
+      type: object
+      required:
+        - targetType
+        - attachSource
+        - processInfo
+        - attachDecision
+      properties:
+        targetType:
+          type: string
+          enum:
+            - label
+            - pid
+            - process
+        attachSource:
+          type: string
+          enum:
+            - managed-workload
+            - external-pid
+            - process-selection
+            - managed-fallback
+        processInfo:
+          nullable: true
+          $ref: '#/components/schemas/TaskProcessInfo'
+        attachDecision:
+          type: string
+    TaskProcessContextSummary:
+      type: object
+      required:
+        - targetType
+        - attachSource
+        - processInfo
+        - summary
+      properties:
+        targetType:
+          type: string
+          enum:
+            - label
+            - pid
+            - process
+        attachSource:
+          type: string
+          enum:
+            - managed-workload
+            - external-pid
+            - process-selection
+            - managed-fallback
+        processInfo:
+          nullable: true
+          $ref: '#/components/schemas/TaskProcessInfo'
+        summary:
+          type: string
+    ProcessListResponse:
+      type: object
+      required:
+        - collectedAt
+        - processes
+      properties:
+        collectedAt:
+          type: string
+          format: date-time
+        processes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskProcessInfo'
+    TaskSummary:
+      type: object
+      required:
+        - id
+        - title
+        - target
+        - targetContext
+        - language
+        - collector
+        - collectorName
+        - scenario
+        - scenarioName
+        - status
+        - statusReason
+        - uploadState
+        - progress
+        - createdAt
+        - updatedAt
+        - signal
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        target:
+          type: string
+        targetContext:
+          $ref: '#/components/schemas/TaskTargetContext'
+        language:
+          type: string
+        collector:
+          type: string
+        collectorName:
+          type: string
+        scenario:
+          type: string
+        scenarioName:
+          type: string
+        status:
+          type: string
+          enum:
+            - PENDING
+            - RUNNING
+            - UPLOADING
+            - DONE
+            - FAILED
+        statusReason:
+          type: string
+        uploadState:
+          $ref: '#/components/schemas/TaskUploadState'
+        progress:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        signal:
+          type: string
+    CollectorInfo:
+      type: object
+      required:
+        - id
+        - name
+        - languageCoverage
+        - latencyLabel
+        - note
+        - supportsRealCollection
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        displayNameZh:
+          type: string
+        languageCoverage:
+          type: array
+          items:
+            type: string
+        latencyLabel:
+          type: string
+        latencyLabelZh:
+          type: string
+        note:
+          type: string
+        noteZh:
+          type: string
+        supportsRealCollection:
+          type: boolean
+    ScenarioDefinition:
+      type: object
+      required:
+        - id
+        - name
+        - targetLanguage
+        - summary
+        - signal
+        - cpu
+        - blocked
+        - gc
+        - syscalls
+        - confidence
+        - primaryFinding
+        - recommendation
+        - topFunctions
+        - flameGraph
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        displayNameZh:
+          type: string
+        targetLanguage:
+          type: string
+        targetLanguageZh:
+          type: string
+        summary:
+          type: string
+        summaryZh:
+          type: string
+        signal:
+          type: string
+        signalZh:
+          type: string
+        cpu:
+          type: number
+        blocked:
+          type: number
+        gc:
+          type: number
+        syscalls:
+          type: number
+        confidence:
+          type: number
+        primaryFinding:
+          type: string
+        recommendation:
+          type: string
+        topFunctions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskHotFunction'
+        flameGraph:
+          $ref: '#/components/schemas/FlameNode'
+    CollectorRuntimeReadiness:
+      type: object
+      required:
+        - collector
+        - supported
+        - available
+        - readiness
+        - detail
+      properties:
+        collector:
+          type: string
+        supported:
+          type: boolean
+        available:
+          type: boolean
+        readiness:
+          type: string
+        detail:
+          type: string
+    TaskMetrics:
+      type: object
+      required:
+        - cpu
+        - blocked
+        - gc
+        - syscalls
+      properties:
+        cpu:
+          type: number
+        blocked:
+          type: number
+        gc:
+          type: number
+        syscalls:
+          type: number
+    TaskEvent:
+      type: object
+      required:
+        - at
+        - title
+        - detail
+      properties:
+        at:
+          type: string
+          format: date-time
+        title:
+          type: string
+        detail:
+          type: string
+    TaskFinding:
+      type: object
+      required:
+        - title
+        - severity
+        - evidence
+        - recommendation
+      properties:
+        title:
+          type: string
+        severity:
+          type: string
+        evidence:
+          type: string
+        recommendation:
+          type: string
+    FlameNode:
+      type: object
+      required:
+        - name
+        - value
+      properties:
+        name:
+          type: string
+        value:
+          type: number
+        module:
+          type: string
+        color:
+          type: string
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlameNode'
+    TaskHotFunction:
+      type: object
+      required:
+        - name
+        - percent
+        - module
+      properties:
+        name:
+          type: string
+        percent:
+          type: number
+        module:
+          type: string
+        locationSummary:
+          nullable: true
+          type: string
+        file:
+          nullable: true
+          type: string
+        line:
+          nullable: true
+          type: integer
+        mappingState:
+          nullable: true
+          type: string
+        mappingSource:
+          nullable: true
+          type: string
+        sourceHint:
+          type: string
+        representativeStack:
+          type: array
+          items:
+            type: string
+    CollectorProvenance:
+      type: object
+      required:
+        - collector
+        - mode
+        - command
+        - reason
+        - sourceKind
+        - rawSignal
+        - expectedArtifacts
+        - notes
+      properties:
+        collector:
+          type: string
+        mode:
+          type: string
+        command:
+          nullable: true
+          type: string
+        reason:
+          type: string
+        sourceKind:
+          type: string
+        rawSignal:
+          type: string
+        expectedArtifacts:
+          type: array
+          items:
+            type: string
+        notes:
+          type: array
+          items:
+            type: string
+        generatedAt:
+          type: string
+          format: date-time
+        artifactPath:
+          type: string
+    TaskSymbolizationSummary:
+      type: object
+      required:
+        - status
+        - mappedHotspots
+        - syntheticHotspots
+        - lineMappedHotspots
+        - notes
+      properties:
+        status:
+          type: string
+        mappedHotspots:
+          type: integer
+        syntheticHotspots:
+          type: integer
+        lineMappedHotspots:
+          type: integer
+        notes:
+          type: array
+          items:
+            type: string
+    TaskResultIndex:
+      type: object
+      required:
+        - taskId
+        - target
+        - collector
+        - scenario
+        - status
+        - statusReason
+        - uploadState
+        - sampleCount
+        - sampleSource
+        - artifactCount
+        - previewableArtifactCount
+        - artifactKinds
+        - provenance
+        - symbolization
+        - updatedAt
+      properties:
+        taskId:
+          type: string
+        target:
+          type: string
+        targetContext:
+          $ref: '#/components/schemas/TaskTargetContext'
+        collector:
+          type: string
+        scenario:
+          type: string
+        status:
+          type: string
+          enum:
+            - PENDING
+            - RUNNING
+            - UPLOADING
+            - DONE
+            - FAILED
+        statusReason:
+          type: string
+        uploadState:
+          $ref: '#/components/schemas/TaskUploadState'
+        sampleCount:
+          type: integer
+        sampleSource:
+          type: string
+        artifactCount:
+          type: integer
+        previewableArtifactCount:
+          type: integer
+        artifactKinds:
+          type: array
+          items:
+            type: string
+        provenance:
+          nullable: true
+          $ref: '#/components/schemas/CollectorProvenance'
+        symbolization:
+          nullable: true
+          $ref: '#/components/schemas/TaskSymbolizationSummary'
+        updatedAt:
+          type: string
+          format: date-time
+    MetricDelta:
+      type: object
+      required:
+        - metric
+        - label
+        - higherIsBetter
+        - before
+        - after
+        - delta
+        - trend
+      properties:
+        metric:
+          type: string
+        label:
+          type: string
+        higherIsBetter:
+          type: boolean
+        before:
+          type: number
+        after:
+          type: number
+        delta:
+          type: number
+        trend:
+          type: string
+    TaskComparisonHotspot:
+      type: object
+      required:
+        - name
+        - module
+        - percent
+        - rank
+      properties:
+        name:
+          type: string
+        module:
+          type: string
+        percent:
+          type: number
+        rank:
+          type: integer
+        locationSummary:
+          nullable: true
+          type: string
+        mappingState:
+          nullable: true
+          type: string
+    ComparisonDriver:
+      type: object
+      required:
+        - label
+        - trend
+        - delta
+        - evidence
+      properties:
+        label:
+          type: string
+        trend:
+          type: string
+        delta:
+          type: number
+        evidence:
+          type: string
+        hotspotLocationSummary:
+          nullable: true
+          type: string
+    ComparisonTaskSnapshot:
+      type: object
+      required:
+        - taskId
+        - title
+        - updatedAt
+        - confidence
+        - sampleCount
+        - totalPressure
+        - topHotspot
+        - processContext
+      properties:
+        taskId:
+          type: string
+        title:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        confidence:
+          type: number
+        sampleCount:
+          type: integer
+        totalPressure:
+          type: number
+        topHotspot:
+          nullable: true
+          $ref: '#/components/schemas/TaskComparisonHotspot'
+        processContext:
+          $ref: '#/components/schemas/TaskProcessContextSummary'
+    ComparisonCompatibility:
+      type: object
+      required:
+        - sameTargetType
+        - sameAttachSource
+        - sameProcessIdentity
+        - warnings
+      properties:
+        sameTargetType:
+          type: boolean
+        sameAttachSource:
+          type: boolean
+        sameProcessIdentity:
+          nullable: true
+          type: boolean
+        warnings:
+          type: array
+          items:
+            type: string
+    HotspotShift:
+      type: object
+      required:
+        - kind
+        - summary
+        - attribution
+        - emphasis
+        - overlapCount
+        - overlapRatio
+        - sharedHotspots
+        - newHotspots
+        - droppedHotspots
+        - baselineTop
+        - currentTop
+      properties:
+        kind:
+          type: string
+        summary:
+          type: string
+        attribution:
+          type: string
+        emphasis:
+          type: string
+        overlapCount:
+          type: integer
+        overlapRatio:
+          type: number
+        sharedHotspots:
+          type: array
+          items:
+            type: string
+        newHotspots:
+          type: array
+          items:
+            type: string
+        droppedHotspots:
+          type: array
+          items:
+            type: string
+        baselineTop:
+          nullable: true
+          $ref: '#/components/schemas/TaskComparisonHotspot'
+        currentTop:
+          nullable: true
+          $ref: '#/components/schemas/TaskComparisonHotspot'
+    ComparisonMetricSummary:
+      type: object
+      required:
+        - strongest
+        - regressions
+        - improvements
+        - stable
+      properties:
+        strongest:
+          nullable: true
+          $ref: '#/components/schemas/MetricDelta'
+        regressions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricDelta'
+        improvements:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricDelta'
+        stable:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricDelta'
+    TaskDetail:
+      allOf:
+        - $ref: '#/components/schemas/TaskSummary'
+        - type: object
+          required:
+            - reportTitle
+            - reportSummary
+            - primaryFinding
+            - confidence
+            - metrics
+            - timeline
+            - findings
+            - topFunctions
+            - flameGraph
+            - sampleCount
+            - sampleSource
+            - artifacts
+            - collectorLogs
+            - analysisSummary
+            - trendSummary
+            - insights
+          properties:
+            reportTitle:
+              type: string
+            reportSummary:
+              type: string
+            primaryFinding:
+              type: string
+            confidence:
+              type: number
+            metrics:
+              $ref: '#/components/schemas/TaskMetrics'
+            timeline:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskEvent'
+            findings:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskFinding'
+            topFunctions:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskHotFunction'
+            flameGraph:
+              $ref: '#/components/schemas/FlameNode'
+            sampleCount:
+              type: integer
+            sampleSource:
+              type: string
+            artifacts:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskArtifact'
+            collectorLogs:
+              type: array
+              items:
+                type: string
+            analysisSummary:
+              type: string
+            trendSummary:
+              type: string
+            insights:
+              type: array
+              items:
+                type: object
+            baselineComparison:
+              nullable: true
+              $ref: '#/components/schemas/TaskComparison'
+              description: Cached comparison summary when the selected task already has a baseline in scope.
+    TaskArtifact:
+      type: object
+      required:
+        - path
+        - label
+        - kind
+      properties:
+        path:
+          type: string
+        label:
+          type: string
+        kind:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        sizeBytes:
+          type: integer
+        source:
+          type: string
+        previewable:
+          type: boolean
+        previewHint:
+          type: string
+    TaskListResponse:
+      type: object
+      required:
+        - tasks
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskDetail'
+    TaskComparison:
+      type: object
+      required:
+        - baselineId
+        - currentId
+        - verdict
+        - summary
+        - confidenceDelta
+        - totalPressureDelta
+        - metricDeltas
+        - changedHotspot
+        - sharedFinding
+        - baseline
+        - current
+        - hotspotShift
+        - metricSummary
+        - driver
+        - compatibility
+        - evidence
+      properties:
+        baselineId:
+          type: string
+        currentId:
+          type: string
+        verdict:
+          type: string
+        summary:
+          type: string
+        confidenceDelta:
+          type: number
+        totalPressureDelta:
+          type: number
+        metricDeltas:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricDelta'
+        changedHotspot:
+          type: string
+        sharedFinding:
+          type: string
+        baseline:
+          $ref: '#/components/schemas/ComparisonTaskSnapshot'
+        current:
+          $ref: '#/components/schemas/ComparisonTaskSnapshot'
+        hotspotShift:
+          $ref: '#/components/schemas/HotspotShift'
+        metricSummary:
+          $ref: '#/components/schemas/ComparisonMetricSummary'
+        driver:
+          nullable: true
+          $ref: '#/components/schemas/ComparisonDriver'
+        compatibility:
+          $ref: '#/components/schemas/ComparisonCompatibility'
+        evidence:
+          type: array
+          items:
+            type: string
+    TaskArtifactsResponse:
+      type: object
+      required:
+        - taskId
+        - artifacts
+        - resultIndex
+      properties:
+        taskId:
+          type: string
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskArtifact'
+        resultIndex:
+          $ref: '#/components/schemas/TaskResultIndex'
+    ArtifactPreviewResponse:
+      type: object
+      required:
+        - taskId
+        - artifact
+        - preview
+      properties:
+        taskId:
+          type: string
+        artifact:
+          $ref: '#/components/schemas/TaskArtifact'
+        preview:
+          type: object
+          required:
+            - mode
+            - content
+            - truncated
+            - byteLength
+            - mimeType
+            - summary
+          properties:
+            mode:
+              type: string
+            content:
+              nullable: true
+              type: string
+            truncated:
+              type: boolean
+            byteLength:
+              type: integer
+            mimeType:
+              type: string
+            summary:
+              type: string
+    TaskAuditResponse:
+      type: object
+      required:
+        - taskId
+        - auditEvents
+      properties:
+        taskId:
+          type: string
+        auditEvents:
+          type: array
+          items:
+            type: object
+    TaskReasonerResponse:
+      type: object
+      required:
+        - taskId
+      properties:
+        taskId:
+          type: string
+        snapshot:
+          nullable: true
+          type: object
+    TaskTrendPoint:
+      type: object
+      required:
+        - taskId
+        - title
+        - updatedAt
+        - status
+        - sampleCount
+        - confidence
+        - totalPressure
+        - pressureDelta
+        - verdictToPrevious
+        - metrics
+        - topHotspot
+        - topHotspotPercent
+        - topHotspotLocationSummary
+        - processContext
+        - summary
+        - driverLabel
+        - driverEvidence
+      properties:
+        taskId:
+          type: string
+        title:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+        sampleCount:
+          type: integer
+        confidence:
+          type: number
+        totalPressure:
+          type: number
+        pressureDelta:
+          nullable: true
+          type: number
+        verdictToPrevious:
+          type: string
+        metrics:
+          $ref: '#/components/schemas/TaskMetrics'
+        topHotspot:
+          nullable: true
+          type: string
+        topHotspotPercent:
+          nullable: true
+          type: number
+        topHotspotLocationSummary:
+          nullable: true
+          type: string
+        topHotspotMappingState:
+          nullable: true
+          type: string
+        processContext:
+          $ref: '#/components/schemas/TaskProcessContextSummary'
+        summary:
+          type: string
+        driverLabel:
+          nullable: true
+          type: string
+        driverEvidence:
+          nullable: true
+          type: string
+    TaskMetricTrendPoint:
+      type: object
+      required:
+        - taskId
+        - updatedAt
+        - value
+        - delta
+        - trend
+      properties:
+        taskId:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        value:
+          type: number
+        delta:
+          nullable: true
+          type: number
+        trend:
+          type: string
+    TaskMetricSeries:
+      type: object
+      required:
+        - metric
+        - label
+        - points
+      properties:
+        metric:
+          type: string
+        label:
+          type: string
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskMetricTrendPoint'
+    TaskHotspotChange:
+      type: object
+      required:
+        - baselineId
+        - currentId
+        - updatedAt
+        - verdict
+        - pressureDelta
+        - kind
+        - driverLabel
+        - driverEvidence
+        - baselineHotspot
+        - currentHotspot
+        - summary
+      properties:
+        baselineId:
+          type: string
+        currentId:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        verdict:
+          type: string
+        pressureDelta:
+          type: number
+        kind:
+          type: string
+        driverLabel:
+          nullable: true
+          type: string
+        driverEvidence:
+          nullable: true
+          type: string
+        baselineHotspot:
+          nullable: true
+          $ref: '#/components/schemas/TaskComparisonHotspot'
+        currentHotspot:
+          nullable: true
+          $ref: '#/components/schemas/TaskComparisonHotspot'
+        summary:
+          type: string
+    TaskTrendTransition:
+      type: object
+      required:
+        - baselineId
+        - currentId
+        - updatedAt
+        - comparison
+      properties:
+        baselineId:
+          type: string
+        currentId:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        comparison:
+          $ref: '#/components/schemas/TaskComparison'
+    TaskHistorySummary:
+      type: object
+      required:
+        - runCount
+        - focusIndex
+        - verdictCounts
+        - processVariants
+        - attachSources
+        - targetTypes
+        - compatibilityWarnings
+        - currentStreak
+        - latestDriver
+      properties:
+        runCount:
+          type: integer
+        focusIndex:
+          type: integer
+        verdictCounts:
+          type: object
+          additionalProperties:
+            type: integer
+        processVariants:
+          type: integer
+        attachSources:
+          type: array
+          items:
+            type: string
+        targetTypes:
+          type: array
+          items:
+            type: string
+        compatibilityWarnings:
+          type: array
+          items:
+            type: string
+        currentStreak:
+          type: object
+          required:
+            - verdict
+            - length
+          properties:
+            verdict:
+              type: string
+            length:
+              type: integer
+        latestDriver:
+          nullable: true
+          $ref: '#/components/schemas/ComparisonDriver'
+    TaskTrendsResponse:
+      type: object
+      required:
+        - taskId
+        - scope
+        - summary
+        - historySummary
+        - latestComparison
+        - points
+        - metricSeries
+        - hotspotChanges
+        - transitions
+      properties:
+        taskId:
+          type: string
+        scope:
+          type: object
+        summary:
+          type: string
+        historySummary:
+          $ref: '#/components/schemas/TaskHistorySummary'
+          description: Includes trend direction, current streak, and latest driver context when available.
+        latestComparison:
+          nullable: true
+          $ref: '#/components/schemas/TaskComparison'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskTrendPoint'
+        metricSeries:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskMetricSeries'
+        hotspotChanges:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskHotspotChange'
+        transitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskTrendTransition'
+    TaskActiveRun:
+      type: object
+      required:
+        - taskId
+        - stage
+        - startedAt
+        - updatedAt
+        - stopRequested
+        - cleanupHookCount
+        - probe
+        - logs
+      properties:
+        taskId:
+          type: string
+        stage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        stopRequested:
+          type: boolean
+        stopRequestedAt:
+          type: string
+          format: date-time
+        stopReason:
+          type: string
+        cleanupHookCount:
+          type: integer
+        probe:
+          nullable: true
+          type: object
+          required:
+            - collectedAt
+            - host
+            - collectors
+            - notes
+          properties:
+            collectedAt:
+              type: string
+              format: date-time
+            host:
+              type: object
+              required:
+                - platform
+                - arch
+                - nodeVersion
+                - pid
+              properties:
+                platform:
+                  type: string
+                arch:
+                  type: string
+                nodeVersion:
+                  type: string
+                pid:
+                  type: integer
+            collectors:
+              type: array
+              items:
+                $ref: '#/components/schemas/CollectorRuntimeReadiness'
+            notes:
+              type: array
+              items:
+                type: string
+        logs:
+          type: array
+          items:
+            type: string
+    TaskRunStateResponse:
+      type: object
+      required:
+        - taskId
+        - taskStatus
+        - activeRun
+        - stopPending
+      properties:
+        taskId:
+          type: string
+        taskStatus:
+          type: string
+          enum:
+            - PENDING
+            - RUNNING
+            - UPLOADING
+            - DONE
+            - FAILED
+        activeRun:
+          nullable: true
+          $ref: '#/components/schemas/TaskActiveRun'
+        stopPending:
+          type: boolean
+        probeSummary:
+          nullable: true
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorRuntimeReadiness'
+        lastCollectorStage:
+          nullable: true
+          type: string
+    AgentSummary:
+      type: object
+      required:
+        - id
+        - label
+        - status
+        - heartbeatState
+        - registeredAt
+        - lastHeartbeatAt
+        - lastSeenAt
+        - staleAfterSeconds
+        - platform
+        - arch
+        - nodeVersion
+        - hostPid
+        - currentTaskId
+        - notes
+        - collectors
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        status:
+          type: string
+          enum:
+            - online
+            - offline
+        heartbeatState:
+          type: string
+          enum:
+            - healthy
+            - stale
+            - lost
+        registeredAt:
+          type: string
+          format: date-time
+        lastHeartbeatAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        staleAfterSeconds:
+          type: integer
+        platform:
+          type: string
+        arch:
+          type: string
+        nodeVersion:
+          type: string
+        hostPid:
+          nullable: true
+          type: integer
+        currentTaskId:
+          nullable: true
+          type: string
+        notes:
+          type: array
+          items:
+            type: string
+        collectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorRuntimeReadiness'
+        lastOfflineAt:
+          type: string
+          format: date-time
+        lastRecoveryAt:
+          type: string
+          format: date-time
+    AgentRegisterRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        host:
+          type: object
+          properties:
+            platform:
+              type: string
+            arch:
+              type: string
+            nodeVersion:
+              type: string
+            pid:
+              type: integer
+        collectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorRuntimeReadiness'
+        notes:
+          type: array
+          items:
+            type: string
+    AgentHeartbeatRequest:
+      type: object
+      properties:
+        currentTaskId:
+          nullable: true
+          type: string
+        collectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorRuntimeReadiness'
+        notes:
+          type: array
+          items:
+            type: string
+    AgentRegistrationResponse:
+      type: object
+      required:
+        - accepted
+        - staleAfterSeconds
+        - agent
+      properties:
+        accepted:
+          type: boolean
+        staleAfterSeconds:
+          type: integer
+        agent:
+          $ref: '#/components/schemas/AgentSummary'
+    AgentListResponse:
+      type: object
+      required:
+        - staleAfterSeconds
+        - agents
+      properties:
+        staleAfterSeconds:
+          type: integer
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentSummary'
+    AgentPollTaskResponse:
+      type: object
+      required:
+        - accepted
+        - agent
+        - task
+        - message
+      properties:
+        accepted:
+          type: boolean
+        agent:
+          $ref: '#/components/schemas/AgentSummary'
+        task:
+          nullable: true
+          $ref: '#/components/schemas/TaskDetail'
+        message:
+          type: string
+    AgentUploadResultRequest:
+      type: object
+      required:
+        - taskId
+      properties:
+        taskId:
+          type: string
+        note:
+          type: string
+        artifactCount:
+          type: integer
+        uploadState:
+          $ref: '#/components/schemas/TaskUploadState'
+    AgentUploadResultResponse:
+      type: object
+      required:
+        - accepted
+        - taskId
+        - message
+      properties:
+        accepted:
+          type: boolean
+        taskId:
+          type: string
+        message:
+          type: string
+    ContinuousProfileSlice:
+      type: object
+      required:
+        - id
+        - taskId
+        - agentId
+        - target
+        - collector
+        - scenario
+        - startedAt
+        - endedAt
+        - sampleCount
+        - sampleSource
+        - status
+        - artifactPaths
+        - summary
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        agentId:
+          nullable: true
+          type: string
+        target:
+          type: string
+        collector:
+          type: string
+        scenario:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        sampleCount:
+          type: integer
+        sampleSource:
+          type: string
+        status:
+          type: string
+          enum:
+            - ready
+            - partial
+            - failed
+        artifactPaths:
+          type: array
+          items:
+            type: string
+        summary:
+          type: string
+    ContinuousProfileWindow:
+      type: object
+      required:
+        - taskId
+        - from
+        - to
+        - sliceCount
+        - slices
+      properties:
+        taskId:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        sliceCount:
+          type: integer
+        slices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContinuousProfileSlice'
+    ContinuousProfileWindowResponse:
+      type: object
+      required:
+        - taskId
+        - window
+      properties:
+        taskId:
+          type: string
+        window:
+          $ref: '#/components/schemas/ContinuousProfileWindow'
+    ApiError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: string

@@ -6,11 +6,22 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch server/index.ts",
+    "dev:agent": "tsx watch server/agent/index.ts",
     "dev:client": "vite",
     "build": "vite build && tsc -p tsconfig.server.json",
-    "start": "node dist/server/index.js",
+    "agent:start": "tsx server/agent/index.ts",
+    "start": "node -e \"process.env.NODE_ENV='production'; import('./dist/server/server/index.js')\"",
+    "start:prod": "npm run start",
+    "smoke:api": "node -e \"const base=process.env.MINI_DROP_BASE_URL||'http://127.0.0.1:8787'; const paths=['/api/health','/api/tasks','/api/processes']; const run=async()=>{for(const p of paths){const res=await fetch(base+p); if(!res.ok){throw new Error(`${p} -> ${res.status}`);} console.log(`${p} ok`);} }; run().catch((error)=>{console.error(error instanceof Error ? error.message : String(error)); process.exit(1);});\"",
+    "smoke:create-task": "node -e \"const base=process.env.MINI_DROP_BASE_URL||'http://127.0.0.1:8787'; const payload={target:'smoke@local',language:'Python',collector:'py-spy',scenario:'python_hot_loop'}; const run=async()=>{const res=await fetch(base+'/api/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}); if(!res.ok){throw new Error(`/api/tasks -> ${res.status}`);} const body=await res.json(); console.log(body.task?.id||'created');}; run().catch((error)=>{console.error(error instanceof Error ? error.message : String(error)); process.exit(1);});\"",
+    "smoke:repeat-task": "node -e \"const base=process.env.MINI_DROP_BASE_URL||'http://127.0.0.1:8787'; const repeat=Math.max(2, Number(process.env.MINI_DROP_REPEAT_COUNT||2)); const run=async()=>{for(let index=0; index<repeat; index+=1){const payload={target:`repeat-smoke-${index}@local`,language:'Python',collector:'py-spy',scenario:'python_hot_loop'}; const res=await fetch(base+'/api/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}); if(!res.ok){throw new Error(`/api/tasks -> ${res.status}`);} const body=await res.json(); console.log(body.task?.id||`created-${index}`);} }; run().catch((error)=>{console.error(error instanceof Error ? error.message : String(error)); process.exit(1);});\"",
+    "smoke:process-target": "node scripts/smoke-compare-trend.mjs --pid-target-only",
+    "smoke:compare-trend": "node scripts/smoke-compare-trend.mjs",
+    "smoke:continuous-profile": "node scripts/smoke-continuous-profile.mjs",
+    "validate:offline-agent": "tsx scripts/validate-offline-agent.mjs",
+    "validate:local": "npm run typecheck && npm run test && npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
-    "test": "node --import tsx --test tests/run-tests.ts"
+    "test": "node --import ./tests/setup-test-env.mjs --import tsx --test --test-concurrency=1 tests/*.ts"
   },
   "dependencies": {
     "express": "^4.21.2",
@@ -27,5 +38,13 @@
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vite": "^5.4.19"
-  }
+  },
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
 }

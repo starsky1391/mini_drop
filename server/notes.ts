@@ -1,5 +1,5 @@
 export const collectorNotes = [
-  'The default experience uses synthetic profiles so the workflow can be demonstrated without root privileges.',
-  'Each scenario is shaped to mimic the evidence trail a real collector would produce.',
-  'The current pipeline is intentionally small so native collectors can be swapped in later without changing the UI.',
+  '默认体验会优先保留 synthetic profile，这样即使没有 root 权限也能完整演示诊断流程。',
+  '每个场景都会尽量模拟真实采集器应该产出的证据链，方便先验证分析和展示闭环。',
+  '当前采集链路刻意保持轻量，后续替换成原生采集器时不需要重做 UI。',
 ];

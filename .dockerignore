@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+data/
+.git/
+.gitignore
+.dockerignore
+Dockerfile*
+*.log
+*.tmp
+.env*
+.vite/
+.tmp/

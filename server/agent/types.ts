@@ -1,4 +1,4 @@
-import type { CollectorId, TaskCreateInput } from '../../shared/types.js';
+import type { CollectorId, CollectorReadinessStatus, TaskCreateInput } from '../../shared/types.js';
 import type { CollectorPlugin } from '../collectors/types.js';
 
 export type AgentRunStage =
@@ -11,10 +11,29 @@ export type AgentRunStage =
   | 'failed'
   | 'stopped';
 
+export interface AgentRegistrationInput {
+  id?: string;
+  label: string;
+  platform: string;
+  arch: string;
+  nodeVersion: string;
+  hostPid: number | null;
+  staleAfterSeconds: number;
+  collectors: AgentCollectorAvailability[];
+  notes: string[];
+}
+
+export interface AgentHeartbeatInput {
+  currentTaskId?: string | null;
+  collectors?: AgentCollectorAvailability[];
+  notes?: string[];
+}
+
 export interface AgentCollectorAvailability {
   collector: CollectorId;
   supported: boolean;
   available: boolean;
+  readiness: CollectorReadinessStatus;
   detail: string;
 }
 
@@ -42,6 +61,10 @@ export interface AgentRunSnapshot {
   cleanupHookCount: number;
   probe: AgentEnvironmentProbe | null;
   logs: string[];
+}
+
+export interface AgentRunControllerOptions {
+  onSnapshotChange?: (snapshot: AgentRunSnapshot) => void;
 }
 
 export type AgentCleanupHook = () => Promise<void> | void;

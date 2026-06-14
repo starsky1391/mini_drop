@@ -1,37 +1,245 @@
-import type { CollectorId, CollectorInfo, ScenarioDefinition, ScenarioId } from './types.js';
+import type {
+  CollectorId,
+  CollectorInfo,
+  CollectorProvenanceMode,
+  CollectorReadinessStatus,
+  ReasonerMode,
+  ScenarioDefinition,
+  ScenarioId,
+  SymbolizationMappingState,
+  TaskStatus,
+  TaskTargetType,
+  TaskUploadState,
+} from './types.js';
 
 export const collectors: CollectorInfo[] = [
   {
     id: 'perf',
     name: 'perf Sampler',
+    displayNameZh: 'perf 采样',
     languageCoverage: ['C++', 'Go', 'Java'],
     latencyLabel: 'Low overhead',
+    latencyLabelZh: '低开销',
     note: 'Best first choice for CPU dominated native services.',
+    noteZh: '适合优先诊断 CPU 占主导的原生服务。',
     supportsRealCollection: true,
   },
   {
     id: 'py-spy',
     name: 'py-spy',
+    displayNameZh: 'py-spy',
     languageCoverage: ['Python'],
     latencyLabel: 'Near-zero instrumentation',
+    latencyLabelZh: '接近零侵入',
     note: 'Great for interpreter hot loops and async wait time.',
+    noteZh: '适合定位解释器热点循环和异步等待。',
     supportsRealCollection: true,
   },
   {
     id: 'async-profiler',
     name: 'async-profiler',
+    displayNameZh: 'async-profiler',
     languageCoverage: ['Java', 'Kotlin'],
     latencyLabel: 'Production friendly',
+    latencyLabelZh: '线上友好',
     note: 'Strong for JVM CPU, lock, allocation, and wall-clock views.',
-    supportsRealCollection: false,
+    noteZh: '适合 JVM 的 CPU、锁、分配和 wall-clock 诊断。',
+    supportsRealCollection: true,
   },
   {
     id: 'ebpf',
     name: 'eBPF Probe Set',
+    displayNameZh: 'eBPF Probe Set',
     languageCoverage: ['Linux services'],
     latencyLabel: 'Kernel-aware tracing',
+    latencyLabelZh: '内核态可观测',
     note: 'Useful for syscall-heavy and cross-process contention analysis.',
-    supportsRealCollection: false,
+    noteZh: '适合 syscall 密集型场景和跨进程争用分析。',
+    supportsRealCollection: true,
+  },
+];
+
+export const targetTypes: Array<{
+  id: TaskTargetType;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'label',
+    label: '逻辑目标',
+    description: '只填写逻辑目标标识，按当前 managed workload 路径运行。',
+  },
+  {
+    id: 'pid',
+    label: '指定 PID',
+    description: '手动输入真实进程 PID，并尽量直接 attach 到该进程。',
+  },
+  {
+    id: 'process',
+    label: '选择进程',
+    description: '从本机进程列表选择目标，保留 PID 和命令摘要作为证据。',
+  },
+];
+
+export const taskLifecycleStatuses: Array<{
+  id: TaskStatus;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'PENDING',
+    label: '排队中',
+    description: '任务已经创建，正在等待 runner 或 Agent 领取执行。',
+  },
+  {
+    id: 'RUNNING',
+    label: '运行中',
+    description: '采集器已经启动，正在目标进程或 managed workload 上采样。',
+  },
+  {
+    id: 'UPLOADING',
+    label: '上传中',
+    description: '采样结果正在落盘、上传、索引或转换成可分析产物。',
+  },
+  {
+    id: 'DONE',
+    label: '已完成',
+    description: '采样、产物保留和分析已经完成，可以直接复核证据。',
+  },
+  {
+    id: 'FAILED',
+    label: '失败',
+    description: '任务未能完成，仍需保留失败原因、审计记录和已有证据。',
+  },
+];
+
+export const taskUploadStates: Array<{
+  id: TaskUploadState;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'not_started',
+    label: '未上传',
+    description: '任务还在排队或采集中，尚未进入产物暂存或上传阶段。',
+  },
+  {
+    id: 'uploading',
+    label: '上传中',
+    description: '采样产物正在暂存、上传、索引或等待 server 继续分析。',
+  },
+  {
+    id: 'uploaded',
+    label: '已上传',
+    description: '采样产物已经保留并可继续生成最终分析结果。',
+  },
+  {
+    id: 'upload_failed',
+    label: '上传失败',
+    description: '采样产物没有完整上传成功，但任务仍可能保留部分证据。',
+  },
+];
+
+export const collectorReadinessStatuses: Array<{
+  id: CollectorReadinessStatus;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'preferred',
+    label: '首选真实链路',
+    description: '当前平台与依赖满足条件，可优先走 Linux-first 的真实采集路径。',
+  },
+  {
+    id: 'partial-real',
+    label: '部分真实链路',
+    description: '可以保留部分真实采样证据，但仍存在平台、权限或解析层面的降级。',
+  },
+  {
+    id: 'fallback-only',
+    label: '仅 fallback',
+    description: '当前环境无法走首选真实链路，只能使用 managed workload 或 synthetic fallback。',
+  },
+  {
+    id: 'unavailable',
+    label: '不可用',
+    description: '当前平台或依赖条件下无法使用该采集器。',
+  },
+];
+
+export const collectorProvenanceModes: Array<{
+  id: CollectorProvenanceMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'real',
+    label: '真实链路',
+    description: '采样命中了首选真实路径，并保留了可分析的真实产物。',
+  },
+  {
+    id: 'partial-real',
+    label: '部分真实',
+    description: '保留了部分真实产物或真实原始信号，但最终结果带有可见降级。',
+  },
+  {
+    id: 'fallback',
+    label: 'fallback',
+    description: '未能完成真实链路采样，结果来自 fallback 路径或 synthetic 产物。',
+  },
+];
+
+export const symbolizationMappingStates: Array<{
+  id: SymbolizationMappingState;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'full',
+    label: '完整映射',
+    description: '已保留符号、文件和行号，可直接对应到较可信的代码位置。',
+  },
+  {
+    id: 'file-only',
+    label: '仅文件级',
+    description: '保留了文件或路径信息，但缺少准确行号。',
+  },
+  {
+    id: 'module-only',
+    label: '仅模块级',
+    description: '只有模块或二进制级别的可读信息，定位精度有限。',
+  },
+  {
+    id: 'synthetic',
+    label: '合成映射',
+    description: '当前显示依赖 synthetic fallback 或派生标签，不能等同真实源码映射。',
+  },
+  {
+    id: 'unknown',
+    label: '未知映射',
+    description: '没有足够证据恢复可读位置，需要结合原始产物进一步核对。',
+  },
+];
+
+export const reasonerModes: Array<{
+  id: ReasonerMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'disabled',
+    label: '已禁用',
+    description: '只保留证据包，不尝试生成模型摘要。',
+  },
+  {
+    id: 'stub',
+    label: '本地安全 stub',
+    description: '使用内置 evidence-only 逻辑输出安全摘要，适合本地回归和离线演示。',
+  },
+  {
+    id: 'external',
+    label: '外部 API',
+    description: '通过外部 LLM API 生成摘要，但必须经过 schema 校验与 citation 过滤。',
   },
 ];
 
@@ -39,16 +247,20 @@ export const scenarios: ScenarioDefinition[] = [
   {
     id: 'cpu_hot',
     name: 'CPU Hot Path',
+    displayNameZh: 'CPU 热路径',
     targetLanguage: 'Go / C++',
-    summary: 'A single compute path dominates CPU time and pushes the service into saturation.',
+    targetLanguageZh: 'Go / C++',
+    summary: '单条计算路径占据了大部分 CPU 时间，正在把服务推向饱和。',
+    summaryZh: '单条计算路径占据大部分 CPU 时间，推动服务走向饱和。',
     signal: 'CPU bound',
+    signalZh: 'CPU 受限',
     cpu: 91,
     blocked: 4,
     gc: 2,
     syscalls: 3,
     confidence: 0.95,
-    primaryFinding: 'parseBatch and checksumLoop consume most sampled CPU time.',
-    recommendation: 'Split the hot loop, reduce allocations, and verify vectorized operations on the critical path.',
+    primaryFinding: 'parseBatch 和 checksumLoop 消耗了大部分采样 CPU 时间。',
+    recommendation: '拆分热点循环、减少分配，并确认关键路径上的向量化优化是否生效。',
     topFunctions: [
       { name: 'parseBatch', percent: 36, module: 'ingest/decoder.cc' },
       { name: 'checksumLoop', percent: 24, module: 'ingest/hash.cc' },
@@ -95,16 +307,20 @@ export const scenarios: ScenarioDefinition[] = [
   {
     id: 'lock_contention',
     name: 'Lock Contention',
+    displayNameZh: '锁竞争',
     targetLanguage: 'Java / C++',
-    summary: 'Threads spend a large share of time waiting on a single lock and make poor forward progress.',
+    targetLanguageZh: 'Java / C++',
+    summary: '线程把大量时间花在等待同一把锁上，整体前进效率很差。',
+    summaryZh: '线程大量时间等待同一把锁，整体前进速度很差。',
     signal: 'Blocked on mutex',
+    signalZh: '阻塞在 mutex',
     cpu: 53,
     blocked: 38,
     gc: 4,
     syscalls: 5,
     confidence: 0.91,
-    primaryFinding: 'Worker threads are serialized behind queueLock during request fan-out.',
-    recommendation: 'Reduce lock granularity, batch shared-state updates, and confirm contention disappears under load.',
+    primaryFinding: '请求扇出过程中，worker 线程在 queueLock 后面被串行化了。',
+    recommendation: '降低锁粒度、批量更新共享状态，并确认负载下争用是否消失。',
     topFunctions: [
       { name: 'QueueLock::lock', percent: 41, module: 'sync/queue_lock.cpp' },
       { name: 'dispatchWork', percent: 23, module: 'service/scheduler.cpp' },
@@ -143,16 +359,20 @@ export const scenarios: ScenarioDefinition[] = [
   {
     id: 'gc_pressure',
     name: 'GC Pressure',
+    displayNameZh: 'GC 压力',
     targetLanguage: 'Java / Kotlin',
-    summary: 'The runtime spends a growing amount of time reclaiming short-lived allocations.',
+    targetLanguageZh: 'Java / Kotlin',
+    summary: '运行时把越来越多的时间花在回收短生命周期对象上。',
+    summaryZh: '运行时花越来越多时间回收短生命周期对象。',
     signal: 'GC pressure',
+    signalZh: 'GC 压力',
     cpu: 64,
     blocked: 9,
     gc: 27,
     syscalls: 3,
     confidence: 0.89,
-    primaryFinding: 'Allocation rate spikes before every pause and pushes latency out of budget.',
-    recommendation: 'Reduce object churn in the request path, reuse buffers, and compare pause time before and after the fix.',
+    primaryFinding: '每次停顿前分配速率都会飙升，并把延迟推高到预算之外。',
+    recommendation: '减少请求路径中的对象抖动、复用 buffer，并对比修复前后的停顿时间。',
     topFunctions: [
       { name: 'ObjectAllocator::new', percent: 31, module: 'runtime/memory.cpp' },
       { name: 'youngGenCollect', percent: 27, module: 'runtime/gc.cpp' },
@@ -191,16 +411,20 @@ export const scenarios: ScenarioDefinition[] = [
   {
     id: 'python_hot_loop',
     name: 'Python Hot Loop',
+    displayNameZh: 'Python 热循环',
     targetLanguage: 'Python',
-    summary: 'Interpreter time is concentrated in a tight loop that repeatedly walks Python objects.',
+    targetLanguageZh: 'Python',
+    summary: '解释器时间集中在一个反复遍历 Python 对象的紧密循环里。',
+    summaryZh: '解释器时间集中在一个反复遍历 Python 对象的紧密循环里。',
     signal: 'Interpreter bound',
+    signalZh: '解释器受限',
     cpu: 72,
     blocked: 7,
     gc: 5,
     syscalls: 6,
     confidence: 0.93,
-    primaryFinding: 'frame evaluation and list traversal dominate the profile.',
-    recommendation: 'Move the hot path to vectorized operations, cache parsed fields, or offload the loop to native code.',
+    primaryFinding: 'frame evaluation 与 list traversal 主导了整个画像。',
+    recommendation: '把热点路径迁到向量化操作、缓存解析字段，或把循环下沉到 native code。',
     topFunctions: [
       { name: 'frame_eval', percent: 39, module: 'python/ceval.c' },
       { name: 'walk_rows', percent: 22, module: 'app/rows.py' },
@@ -246,10 +470,18 @@ export function getCollector(collectorId: CollectorInfo['id']) {
   return collectors.find((collector) => collector.id === collectorId) ?? collectors[0];
 }
 
+export function getTargetTypeOption(targetType: TaskTargetType) {
+  return targetTypes.find((item) => item.id === targetType) ?? targetTypes[0];
+}
+
 export function isCollectorId(value: string): value is CollectorId {
   return collectors.some((collector) => collector.id === value);
 }
 
 export function isScenarioId(value: string): value is ScenarioId {
   return scenarios.some((scenario) => scenario.id === value);
+}
+
+export function isTaskTargetType(value: string): value is TaskTargetType {
+  return targetTypes.some((item) => item.id === value);
 }

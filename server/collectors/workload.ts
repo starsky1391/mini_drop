@@ -3,8 +3,9 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { once } from 'node:events';
 import type { CollectorId, ScenarioId, TaskMetrics } from '../../shared/types.js';
+import { resolveDataRoot } from '../storage/data-root.js';
 
-const workloadDir = path.join(process.cwd(), 'data', 'workloads');
+const workloadDir = path.join(resolveDataRoot(), 'workloads');
 const workloadPath = path.join(workloadDir, 'mini_drop_workload.py');
 
 export interface WorkloadSpec {

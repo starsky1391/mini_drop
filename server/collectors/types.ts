@@ -1,11 +1,25 @@
-import type { CollectorId, ScenarioId, TaskDetail, TaskMetrics, TaskStatus } from '../../shared/types.js';
+import type {
+  TaskAttachSource,
+  CollectorId,
+  ScenarioId,
+  SymbolizationMappingSource,
+  SymbolizationMappingState,
+  TaskDetail,
+  TaskMetrics,
+  TaskProcessInfo,
+  TaskStatus,
+  TaskTargetContext,
+} from '../../shared/types.js';
 
 export interface CollectionContext {
   taskId: string;
   target: string;
+  targetContext: TaskTargetContext;
   language: string;
   scenario: ScenarioId;
   collector: CollectorId;
+  requestedPid: number | null;
+  processInfo: TaskProcessInfo | null;
 }
 
 export interface CollectorCapabilities {
@@ -29,6 +43,8 @@ export interface CollectorFrameEvidence {
   file: string;
   line: number | null;
   sourceHint: string;
+  mappingState?: SymbolizationMappingState;
+  mappingSource?: SymbolizationMappingSource;
   address?: string | null;
 }
 
@@ -93,6 +109,7 @@ export interface CollectorOutcome {
   sample: CollectorSample;
   report: CollectorReport;
   logs: string[];
+  targetContext?: Partial<Pick<TaskTargetContext, 'attachSource' | 'attachDecision' | 'processInfo'>>;
 }
 
 export interface CollectorPlugin {

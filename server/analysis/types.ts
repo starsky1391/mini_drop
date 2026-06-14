@@ -7,6 +7,8 @@ import type {
 import type {
   ComparisonTrend,
   FlameNode,
+  SymbolizationMappingSource,
+  SymbolizationMappingState,
   TaskComparison,
   TaskDetail,
   TaskEvent,
@@ -22,6 +24,8 @@ export interface SymbolizedFrame {
   file: string;
   line: number | null;
   sourceHint: string;
+  mappingState: SymbolizationMappingState;
+  mappingSource: SymbolizationMappingSource;
 }
 
 export interface NormalizedHotspot {
@@ -86,6 +90,23 @@ export interface AnalysisNarrative {
 }
 
 export function symbolizeCollectorFrame(frame: CollectorFrameEvidence): SymbolizedFrame {
+  const mappingState =
+    frame.mappingState ??
+    (frame.line !== null && frame.file && frame.file !== 'unknown'
+      ? 'full'
+      : frame.file && frame.file !== 'unknown'
+        ? 'file-only'
+        : frame.module && !frame.module.toLowerCase().includes('unknown')
+          ? 'module-only'
+          : 'unknown');
+  const mappingSource =
+    frame.mappingSource ??
+    (mappingState === 'full' || mappingState === 'file-only'
+      ? 'retained'
+      : mappingState === 'module-only'
+        ? 'derived-path'
+        : 'fallback');
+
   return {
     displayName: frame.name,
     symbol: frame.symbol,
@@ -93,6 +114,8 @@ export function symbolizeCollectorFrame(frame: CollectorFrameEvidence): Symboliz
     file: frame.file,
     line: frame.line,
     sourceHint: frame.sourceHint,
+    mappingState,
+    mappingSource,
   };
 }
 

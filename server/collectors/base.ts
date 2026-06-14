@@ -7,6 +7,12 @@ export function createCollectorRegistry(plugins: CollectorPlugin[]) {
     list() {
       return plugins.map((plugin) => plugin.capability);
     },
+    entries() {
+      return [...registry.entries()];
+    },
+    values() {
+      return [...registry.values()];
+    },
     get(id: CollectorPlugin['capability']['id']) {
       return registry.get(id) ?? null;
     },
