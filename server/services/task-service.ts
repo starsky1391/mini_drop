@@ -43,6 +43,7 @@ import type {
   ArtifactPreview,
   ArtifactPreviewResponse,
   ApiErrorResponse,
+  CollectorId,
   CollectorRuntimeReadiness,
   ContinuousProfileWindowResponse,
   ProcessListResponse,
@@ -808,16 +809,25 @@ export async function loadArtifactPreview(taskId: string, artifactPath: string) 
       } satisfies ApiErrorResponse;
     }
 
+    const task = await getTask(taskId);
+    if (!task) {
+      return {
+        code: 'artifact_not_found',
+        message: 'Artifact not found for the selected task.',
+      } satisfies ApiErrorResponse;
+    }
+
     return {
       taskId,
       artifact,
-      preview: await readArtifactPreview(artifact.path),
+      preview: await readArtifactPreview(artifact.path, task.collector),
     };
   });
 }
 
-async function readArtifactPreview(filePath: string): Promise<ArtifactPreview> {
-  const preview = buildArtifactPreviewMetadata(filePath, inferArtifactKindFromPath(filePath));
+async function readArtifactPreview(filePath: string, collector?: string): Promise<ArtifactPreview> {
+  const collectorId = isCollectorId(collector ?? '') ? (collector as CollectorId) : undefined;
+  const preview = buildArtifactPreviewMetadata(filePath, inferArtifactKindFromPath(filePath), collectorId);
   const mode = preview.mode;
   if (mode === 'unsupported') {
     const stats = await fs.stat(filePath).catch(() => null);

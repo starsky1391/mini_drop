@@ -64,8 +64,8 @@ async function probeCollectorAvailability(plugin: CollectorPlugin): Promise<Agen
         collector: plugin.capability.id,
         supported: false,
         available: false,
-        readiness: 'fallback-only',
-        detail: `tool=perf platform=${process.platform} requires linux；当前 collector 会走 fallback 路径。`,
+        readiness: 'deferred-for-linux-proof',
+        detail: `tool=perf platform=${process.platform} requires linux；当前 collector 标记为 deferred-for-linux-proof，等待后续 Linux 现场验证。`,
       };
     }
 
@@ -97,8 +97,8 @@ async function probeCollectorAvailability(plugin: CollectorPlugin): Promise<Agen
         collector: plugin.capability.id,
         supported: false,
         available: false,
-        readiness: 'fallback-only',
-        detail: `tool=bpftrace platform=${process.platform} requires linux；当前 collector 会走 fallback 路径。`,
+        readiness: 'deferred-for-linux-proof',
+        detail: `tool=bpftrace platform=${process.platform} requires linux；当前 collector 标记为 deferred-for-linux-proof，等待后续 Linux 现场验证。`,
       };
     }
 

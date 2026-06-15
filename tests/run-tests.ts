@@ -519,6 +519,51 @@ test('assessEbpfCollection distinguishes raw-snapshot partial-real paths from fa
   assert.match(fallback.reason, /permission denied/i);
 });
 
+test('probeAgentEnvironment defers perf and ebpf on non-linux platforms with explicit deferred-for-linux-proof readiness', async () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+  try {
+    const perfProbe = await probeAgentEnvironment({
+      capability: {
+        id: 'perf',
+        name: 'perf',
+        languages: ['C++'],
+        description: 'test plugin',
+        supportsRealCollection: true,
+      },
+      async collect() {
+        throw new Error('not used');
+      },
+    });
+
+    assert.equal(perfProbe.collectors[0]?.collector, 'perf');
+    assert.equal(perfProbe.collectors[0]?.readiness, 'deferred-for-linux-proof');
+    assert.equal(perfProbe.collectors[0]?.available, false);
+    assert.match(perfProbe.collectors[0]?.detail ?? '', /deferred-for-linux-proof/);
+
+    const ebpfProbe = await probeAgentEnvironment({
+      capability: {
+        id: 'ebpf',
+        name: 'eBPF',
+        languages: ['Linux'],
+        description: 'test plugin',
+        supportsRealCollection: true,
+      },
+      async collect() {
+        throw new Error('not used');
+      },
+    });
+
+    assert.equal(ebpfProbe.collectors[0]?.collector, 'ebpf');
+    assert.equal(ebpfProbe.collectors[0]?.readiness, 'deferred-for-linux-proof');
+    assert.equal(ebpfProbe.collectors[0]?.available, false);
+    assert.match(ebpfProbe.collectors[0]?.detail ?? '', /deferred-for-linux-proof/);
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  }
+});
+
 test('probeAgentEnvironment includes explicit command availability details for async-profiler', async () => {
   const previous = process.env.MINI_DROP_ASYNC_PROFILER_BIN;
   process.env.MINI_DROP_ASYNC_PROFILER_BIN = '__mini_drop_missing_async_profiler__';
@@ -1770,4 +1815,68 @@ test('continuous profiling history window can aggregate comparable runs and appl
   assert.ok(limitedWindow);
   assert.equal(limitedWindow?.window.sliceCount, 1);
   assert.equal(limitedWindow?.window.slices[0]?.taskId, second.id);
+});
+
+test('collector maturity matrix classifies all four collectors correctly', async () => {
+  const { collectorMaturityMatrix } = await import('../server/notes.js');
+  assert.ok(collectorMaturityMatrix);
+  assert.equal(collectorMaturityMatrix.length, 4);
+
+  const pySpy = collectorMaturityMatrix.find((c) => c.collector === 'py-spy');
+  assert.ok(pySpy);
+  assert.equal(pySpy.expectedMaturity, 'stable');
+  assert.equal(pySpy.readiness, 'preferred');
+
+  const perfEntry = collectorMaturityMatrix.find((c) => c.collector === 'perf');
+  assert.ok(perfEntry);
+  assert.equal(perfEntry.expectedMaturity, 'deferred');
+  assert.equal(perfEntry.readiness, 'deferred-for-linux-proof');
+
+  const ebpfEntry = collectorMaturityMatrix.find((c) => c.collector === 'ebpf');
+  assert.ok(ebpfEntry);
+  assert.equal(ebpfEntry.expectedMaturity, 'deferred');
+  assert.equal(ebpfEntry.readiness, 'deferred-for-linux-proof');
+
+  const asyncProfiler = collectorMaturityMatrix.find((c) => c.collector === 'async-profiler');
+  assert.ok(asyncProfiler);
+  assert.ok(['partial', 'stable'].includes(asyncProfiler.expectedMaturity));
+});
+
+test('collector maturity matrix includes platform and notes for each entry', async () => {
+  const { collectorMaturityMatrix } = await import('../server/notes.js');
+  for (const entry of collectorMaturityMatrix) {
+    assert.ok(entry.platform, `Expected platform for ${entry.collector}`);
+    assert.ok(entry.notes, `Expected notes for ${entry.collector}`);
+    assert.ok(entry.notes.length > 0, `Expected non-empty notes for ${entry.collector}`);
+  }
+});
+
+test('artifact preview metadata includes collector parity information', async () => {
+  const { buildArtifactPreviewMetadata } = await import('../server/artifact-preview.js');
+
+  const pySpyPreview = buildArtifactPreviewMetadata('/tmp/test.json', 'speedscope', 'py-spy');
+  assert.equal(pySpyPreview.collectorParity?.collector, 'py-spy');
+  assert.equal(pySpyPreview.collectorParity?.parityLevel, 'full');
+  assert.ok(pySpyPreview.collectorParity?.supportedKinds.includes('speedscope'));
+
+  const perfPreview = buildArtifactPreviewMetadata('/tmp/test.data', 'raw', 'perf');
+  assert.equal(perfPreview.collectorParity?.collector, 'perf');
+  assert.equal(perfPreview.collectorParity?.parityLevel, 'full');
+  assert.ok(perfPreview.collectorParity?.supportedKinds.includes('raw'));
+
+  const asyncProfilerPreview = buildArtifactPreviewMetadata('/tmp/test.collapsed', 'collapsed-stacks', 'async-profiler');
+  assert.equal(asyncProfilerPreview.collectorParity?.collector, 'async-profiler');
+  assert.equal(asyncProfilerPreview.collectorParity?.parityLevel, 'partial');
+  assert.ok(asyncProfilerPreview.collectorParity?.supportedKinds.includes('collapsed-stacks'));
+
+  const ebpfPreview = buildArtifactPreviewMetadata('/tmp/test.txt', 'raw', 'ebpf');
+  assert.equal(ebpfPreview.collectorParity?.collector, 'ebpf');
+  assert.equal(ebpfPreview.collectorParity?.parityLevel, 'partial');
+  assert.ok(ebpfPreview.collectorParity?.supportedKinds.includes('raw'));
+});
+
+test('artifact preview metadata collector parity is undefined when collector not provided', async () => {
+  const { buildArtifactPreviewMetadata } = await import('../server/artifact-preview.js');
+  const preview = buildArtifactPreviewMetadata('/tmp/test.json', 'report');
+  assert.equal(preview.collectorParity, undefined);
 });

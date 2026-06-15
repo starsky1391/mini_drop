@@ -13,7 +13,7 @@ export type CollectorProvenanceMode = 'real' | 'partial-real' | 'fallback';
 export type ArtifactPreviewMode = 'json' | 'text' | 'unsupported';
 export type ReasonerMode = 'disabled' | 'stub' | 'external';
 export type ReasonerGuardrailStatus = 'enforced';
-export type CollectorReadinessStatus = 'preferred' | 'partial-real' | 'fallback-only' | 'unavailable';
+export type CollectorReadinessStatus = 'preferred' | 'partial-real' | 'fallback-only' | 'deferred-for-linux-proof' | 'unavailable';
 export type SymbolizationMappingState = 'full' | 'file-only' | 'module-only' | 'synthetic' | 'unknown';
 export type SymbolizationMappingSource = 'retained' | 'derived-path' | 'derived-symbol' | 'fallback';
 export type TaskUploadState = 'not_started' | 'uploading' | 'uploaded' | 'upload_failed';
@@ -43,6 +43,9 @@ export interface CollectorInfo {
   note: string;
   noteZh?: string;
   supportsRealCollection: boolean;
+  expectedMaturityOnCurrentHost?: 'stable' | 'partial' | 'fallback' | 'deferred';
+  maturityNote?: string;
+  maturityNoteZh?: string;
 }
 
 export interface ScenarioDefinition {

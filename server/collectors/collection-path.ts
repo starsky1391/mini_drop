@@ -9,6 +9,9 @@ export interface CollectionPathDecision {
   rawSignal: string;
   expectedArtifacts: string[];
   notes?: string[];
+  downgradeFrom?: 'real' | 'partial-real' | null;
+  downgradeReason?: string;
+  platformConstraints?: string[];
 }
 
 type SessionLike = {
@@ -43,6 +46,12 @@ export async function persistCollectionPathDecision(session: SessionLike, decisi
   if (decision.mode === 'partial-real') {
     notes.push('This run retained real collector artifacts, but hotspot shaping or normalization still used a fallback-assisted path.');
   }
+  if (decision.downgradeFrom && decision.downgradeReason) {
+    notes.push(`Downgraded from ${decision.downgradeFrom} because: ${decision.downgradeReason}`);
+  }
+  if (decision.platformConstraints && decision.platformConstraints.length > 0) {
+    notes.push(`Platform constraints: ${decision.platformConstraints.join('; ')}`);
+  }
   if (retention.missing.length > 0) {
     notes.push(`Expected artifacts still missing at summary time: ${retention.missing.join(', ')}.`);
   }
@@ -65,6 +74,9 @@ export async function persistCollectionPathDecision(session: SessionLike, decisi
       matchedArtifacts: retention.matched,
       missingArtifacts: retention.missing,
       notes,
+      downgradeFrom: decision.downgradeFrom,
+      downgradeReason: decision.downgradeReason,
+      platformConstraints: decision.platformConstraints,
       generatedAt: new Date().toISOString(),
     },
     'Collection path summary',

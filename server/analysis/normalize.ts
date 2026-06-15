@@ -18,7 +18,7 @@ export function normalizeCollectorOutcome(task: TaskDetail, outcome: CollectorOu
   const sourceEntries = evidence.hotspots.length
     ? evidence.hotspots
     : (outcome.report.topFunctions.length ? outcome.report.topFunctions : fallbackHotspots).map((entry, index) => {
-        const leaf = symbolizeFallback(entry.name, entry.module);
+        const leaf = symbolizeFallback(entry.name, entry.module, evidence.sourceKind);
         return {
           name: entry.name,
           module: entry.module,
@@ -82,17 +82,21 @@ export function normalizeCollectorOutcome(task: TaskDetail, outcome: CollectorOu
   };
 }
 
-function symbolizeFallback(name: string, modulePath: string) {
+function symbolizeFallback(name: string, modulePath: string, sourceKind?: string) {
   const normalizedModule = modulePath || 'unknown/module';
   const normalizedSource = normalizedModule.replace(/\\/g, '/');
   const segments = normalizedSource.split('/').filter(Boolean);
   const file = segments.at(-1) ?? normalizedModule;
   const sourceHint = segments.length > 1 ? segments.slice(0, -1).join('/') : normalizedSource;
   const symbol = demangleSymbol(name);
-  const mappingState =
-    normalizedModule.toLowerCase().includes('unknown') || normalizedModule.toLowerCase().includes('synthetic')
-      ? ('synthetic' as const)
-      : ('module-only' as const);
+  const isSynthetic =
+    normalizedModule.toLowerCase().includes('unknown') || normalizedModule.toLowerCase().includes('synthetic');
+  const mappingState = isSynthetic ? ('synthetic' as const) : ('module-only' as const);
+  const mappingSource = isSynthetic
+    ? ('fallback' as const)
+    : sourceKind?.includes('real') || sourceKind?.includes('normalized')
+      ? ('derived-path' as const)
+      : ('fallback' as const);
 
   return {
     displayName: name,
@@ -102,7 +106,7 @@ function symbolizeFallback(name: string, modulePath: string) {
     line: null,
     sourceHint,
     mappingState,
-    mappingSource: 'fallback' as const,
+    mappingSource,
   };
 }
 

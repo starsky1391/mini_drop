@@ -23,6 +23,9 @@ export const collectors: CollectorInfo[] = [
     note: 'Best first choice for CPU dominated native services.',
     noteZh: '适合优先诊断 CPU 占主导的原生服务。',
     supportsRealCollection: true,
+    expectedMaturityOnCurrentHost: process.platform === 'linux' ? 'stable' : 'deferred',
+    maturityNote: 'Requires Linux for real stack capture.',
+    maturityNoteZh: process.platform === 'linux' ? '当前平台支持真实 perf 采集。' : '当前非 Linux 平台，perf 真实采集延期到后续 Linux 验证轮。',
   },
   {
     id: 'py-spy',
@@ -34,6 +37,9 @@ export const collectors: CollectorInfo[] = [
     note: 'Great for interpreter hot loops and async wait time.',
     noteZh: '适合定位解释器热点循环和异步等待。',
     supportsRealCollection: true,
+    expectedMaturityOnCurrentHost: 'stable',
+    maturityNote: 'Most stable collector on current host.',
+    maturityNoteZh: '当前平台上最稳定的采集器。',
   },
   {
     id: 'async-profiler',
@@ -45,6 +51,9 @@ export const collectors: CollectorInfo[] = [
     note: 'Strong for JVM CPU, lock, allocation, and wall-clock views.',
     noteZh: '适合 JVM 的 CPU、锁、分配和 wall-clock 诊断。',
     supportsRealCollection: true,
+    expectedMaturityOnCurrentHost: process.platform !== 'win32' ? 'stable' : 'partial',
+    maturityNote: process.platform !== 'win32' ? 'Fully supported on non-Windows platforms.' : 'Partial on Windows; requires non-Windows for full JVM attach.',
+    maturityNoteZh: process.platform !== 'win32' ? '非 Windows 平台完全支持。' : 'Windows 上部分支持；完整 JVM attach 需要非 Windows 平台。',
   },
   {
     id: 'ebpf',
@@ -56,6 +65,9 @@ export const collectors: CollectorInfo[] = [
     note: 'Useful for syscall-heavy and cross-process contention analysis.',
     noteZh: '适合 syscall 密集型场景和跨进程争用分析。',
     supportsRealCollection: true,
+    expectedMaturityOnCurrentHost: process.platform === 'linux' ? 'partial' : 'deferred',
+    maturityNote: 'Linux-only; deferred on non-Linux hosts.',
+    maturityNoteZh: process.platform === 'linux' ? 'Linux 上部分支持（需要 root 和 BCC/bpftrace）。' : '仅 Linux 支持；当前平台延期到后续 Linux 验证轮。',
   },
 ];
 

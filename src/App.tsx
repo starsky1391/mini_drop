@@ -329,6 +329,8 @@ function readinessTone(readiness: CollectorRuntimeReadiness['readiness'] | null 
       return 'amber';
     case 'fallback-only':
       return 'rose';
+    case 'deferred-for-linux-proof':
+      return 'purple';
     default:
       return 'slate';
   }
@@ -560,6 +562,8 @@ function readinessLabel(readiness: CollectorRuntimeReadiness['readiness'] | null
       return '部分真实';
     case 'fallback-only':
       return '仅 fallback';
+    case 'deferred-for-linux-proof':
+      return 'Linux 证明延期';
     default:
       return '未知';
   }
@@ -1799,18 +1803,24 @@ function App() {
 
               {catalog?.collectorReadiness?.length ? (
                 <div className="collector-readiness-grid">
-                  {catalog.collectorReadiness.map((entry) => (
-                    <article
-                      key={entry.collector}
-                      className={`readiness-card readiness-${readinessTone(entry.readiness)} ${form.collector === entry.collector ? 'readiness-active' : ''}`}
-                    >
-                      <div className="baseline-candidate-head">
-                        <strong>{entry.collector}</strong>
-                        <span className={`tone tone-${readinessTone(entry.readiness)}`}>{readinessLabel(entry.readiness)}</span>
-                      </div>
-                      <small>{localizeLegacyText(entry.detail)}</small>
-                    </article>
-                  ))}
+                  {catalog.collectorReadiness.map((entry) => {
+                    const maturityInfo = catalog.collectors.find((c) => c.id === entry.collector);
+                    return (
+                      <article
+                        key={entry.collector}
+                        className={`readiness-card readiness-${readinessTone(entry.readiness)} ${form.collector === entry.collector ? 'readiness-active' : ''}`}
+                      >
+                        <div className="baseline-candidate-head">
+                          <strong>{entry.collector}</strong>
+                          <span className={`tone tone-${readinessTone(entry.readiness)}`}>{readinessLabel(entry.readiness)}</span>
+                        </div>
+                        <small>{localizeLegacyText(entry.detail)}</small>
+                        {maturityInfo?.maturityNoteZh ? (
+                          <small className="maturity-note">{maturityInfo.maturityNoteZh}</small>
+                        ) : null}
+                      </article>
+                    );
+                  })}
                 </div>
               ) : null}
 
@@ -2707,13 +2717,27 @@ function App() {
                             </strong>
                           </div>
                           <div>
+                            <span>采集模式</span>
+                            <strong>{provenanceModeLabel(artifactBundle.resultIndex.provenance.mode)}</strong>
+                          </div>
+                          <div>
                             <span>原因</span>
                             <strong>{artifactBundle.resultIndex.provenance.reason}</strong>
+                          </div>
+                          <div>
+                            <span>原始信号</span>
+                            <strong>{artifactBundle.resultIndex.provenance.rawSignal}</strong>
                           </div>
                           <div>
                             <span>期望产物</span>
                             <strong>{artifactBundle.resultIndex.provenance.expectedArtifacts.join(', ') || 'n/a'}</strong>
                           </div>
+                          {artifactBundle.resultIndex.provenance.notes && artifactBundle.resultIndex.provenance.notes.length > 0 ? (
+                            <div>
+                              <span>备注</span>
+                              <strong>{artifactBundle.resultIndex.provenance.notes.join('; ')}</strong>
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
 
