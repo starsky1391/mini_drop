@@ -1,6 +1,4 @@
-import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { promisify } from 'node:util';
 import { getScenario } from '../../shared/catalog.js';
 import type { CollectorOutcome, CollectorPlugin } from './types.js';
 import { artifactLabel, artifactPath, ensureArtifactDir, ensureArtifactFile } from './runtime-utils.js';
@@ -10,8 +8,7 @@ import { buildCollapsedFromHotspots, mergeHotspots, parsePerfScript } from './pr
 import type { ParsedProfileSummary } from './profile-utils.js';
 import { createCollectorSession } from './session.js';
 import { persistCollectionPathDecision } from './collection-path.js';
-
-const execFileAsync = promisify(execFile);
+import { probeLinuxPrivilegeSupport, runLinuxCollectorCommand } from './linux-privileged.js';
 
 export const perfCollector: CollectorPlugin = {
   capability: {
@@ -57,9 +54,10 @@ export const perfCollector: CollectorPlugin = {
     let commandError: string | null = null;
     let perfDataRecovered = false;
     let scriptOutputHadFrames = false;
-
     try {
       if (process.platform === 'linux') {
+        const linuxPrivilege = await probeLinuxPrivilegeSupport();
+        session.log('prepare', linuxPrivilege.detail);
         const recordArgs = [
           'record',
           '-F',
@@ -74,7 +72,10 @@ export const perfCollector: CollectorPlugin = {
           String(durationSeconds),
         ];
         collectionCommand = `perf ${recordArgs.join(' ')}`;
-        const perfRecord = await execFileAsync('perf', recordArgs);
+        const perfRecord = await runLinuxCollectorCommand('perf', recordArgs, {
+          timeoutMs: Math.max(15_000, durationSeconds * 2_000),
+          requirePrivilege: true,
+        });
         session.log('capture', perfRecord.stderr?.trim() || 'perf record completed.');
         const retention = await ensureArtifactFile(
           perfDataPath,
@@ -86,7 +87,10 @@ export const perfCollector: CollectorPlugin = {
           session.log('fallback', 'perf record completed but no retained perf.data payload was found; placeholder persisted.');
         }
 
-        const perfScript = await execFileAsync('perf', ['script', '-i', perfDataPath]);
+        const perfScript = await runLinuxCollectorCommand('perf', ['script', '-i', perfDataPath], {
+          timeoutMs: 20_000,
+          requirePrivilege: true,
+        });
         scriptOutputHadFrames = perfScript.stdout.trim().length > 0;
         const scriptPath = await session.writeTextArtifact(
           'raw',

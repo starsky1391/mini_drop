@@ -173,6 +173,11 @@ export const collectorReadinessStatuses: Array<{
     description: '当前环境无法走首选真实链路，只能使用 managed workload 或 synthetic fallback。',
   },
   {
+    id: 'deferred-for-linux-proof',
+    label: 'Linux 证明延期',
+    description: '该采集器需要 Linux 环境才能完成真实链路现场证明，当前主机或当前轮次尚未具备条件。',
+  },
+  {
     id: 'unavailable',
     label: '不可用',
     description: '当前平台或依赖条件下无法使用该采集器。',

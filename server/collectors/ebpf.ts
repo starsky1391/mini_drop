@@ -1,6 +1,4 @@
-import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { promisify } from 'node:util';
 import { getScenario } from '../../shared/catalog.js';
 import type { CollectorOutcome, CollectorPlugin } from './types.js';
 import { artifactLabel, artifactPath, ensureArtifactDir } from './runtime-utils.js';
@@ -10,8 +8,7 @@ import { buildCollapsedFromHotspots, mergeHotspots, parseBpftraceSnapshot } from
 import type { ParsedProfileSummary } from './profile-utils.js';
 import { createCollectorSession } from './session.js';
 import { persistCollectionPathDecision } from './collection-path.js';
-
-const execFileAsync = promisify(execFile);
+import { probeLinuxPrivilegeSupport, runLinuxCollectorCommand } from './linux-privileged.js';
 
 export const ebpfCollector: CollectorPlugin = {
   capability: {
@@ -62,9 +59,14 @@ export const ebpfCollector: CollectorPlugin = {
     try {
       const bpftraceBin = process.env.MINI_DROP_BPFTRACE_BIN || 'bpftrace';
       if (process.platform === 'linux' && (await isCommandAvailable(bpftraceBin, ['--version']))) {
+        const linuxPrivilege = await probeLinuxPrivilegeSupport();
+        session.log('prepare', linuxPrivilege.detail);
         const script = `profile:hz:${profile.sampleRate} /pid == ${attachPid}/ { @[ustack] = count(); } interval:s:${durationSeconds} { exit(); }`;
         collectionCommand = `${bpftraceBin} -e ${script}`;
-        const result = await execFileAsync(bpftraceBin, ['-e', script], { maxBuffer: 8 * 1024 * 1024 });
+        const result = await runLinuxCollectorCommand(bpftraceBin, ['-e', script], {
+          timeoutMs: Math.max(20_000, durationSeconds * 2_000),
+          requirePrivilege: true,
+        });
         rawSnapshot = [result.stdout?.trim(), result.stderr?.trim()].filter(Boolean).join('\n');
         parsedProfile = rawSnapshot ? parseBpftraceSnapshot(rawSnapshot) : null;
         rawSignal = parsedProfile?.usedRealData
@@ -214,7 +216,7 @@ export const ebpfCollector: CollectorPlugin = {
 
 async function isCommandAvailable(command: string, args: string[]) {
   try {
-    await execFileAsync(command, args, { timeout: 5000 });
+    await runLinuxCollectorCommand(command, args, { timeoutMs: 5_000, requirePrivilege: false });
     return true;
   } catch {
     return false;

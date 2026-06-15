@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { collectorRegistry } from '../collectors/index.js';
+import { probeLinuxPrivilegeSupport } from '../collectors/linux-privileged.js';
 import type { CollectorPlugin } from '../collectors/types.js';
 import type { AgentCollectorAvailability, AgentEnvironmentProbe } from './types.js';
 
@@ -69,9 +70,20 @@ async function probeCollectorAvailability(plugin: CollectorPlugin): Promise<Agen
       };
     }
 
+    const privilege = await probeLinuxPrivilegeSupport();
+    if (!privilege.canRunPrivilegedCollectors) {
+      return {
+        collector: plugin.capability.id,
+        supported: true,
+        available: false,
+        readiness: 'fallback-only',
+        detail: `tool=perf available=true ${privilege.detail} 当前 Linux 主机缺少可用的提权路径，因此 perf 仍会退回 fallback。`,
+      };
+    }
+
     return annotateProbeDetail(
       await commandAvailability(plugin.capability.id, 'perf', ['--version'], 'preferred'),
-      '在 Linux 上优先用于 native / Go / C++ 演示；如果 perf script 无法归一化，仍会保留 perf.data 与 script 产物用于 partial-real 审计。',
+      `${privilege.detail} 在 Linux 上优先用于 native / Go / C++ 演示；如果 perf script 无法归一化，仍会保留 perf.data 与 script 产物用于 partial-real 审计。`,
     );
   }
 
@@ -102,10 +114,21 @@ async function probeCollectorAvailability(plugin: CollectorPlugin): Promise<Agen
       };
     }
 
+    const privilege = await probeLinuxPrivilegeSupport();
+    if (!privilege.canRunPrivilegedCollectors) {
+      return {
+        collector: plugin.capability.id,
+        supported: true,
+        available: false,
+        readiness: 'fallback-only',
+        detail: `tool=bpftrace available=true ${privilege.detail} 当前 Linux 主机缺少可用的提权路径，因此 eBPF 仍会退回 fallback。`,
+      };
+    }
+
     const command = process.env.MINI_DROP_BPFTRACE_BIN || 'bpftrace';
     return annotateProbeDetail(
       await commandAvailability(plugin.capability.id, command, ['--version'], 'partial-real'),
-      '在 Linux 上支持面向 PID 的 raw snapshot；当 bpftrace 输出可解析时会提升到结构化热点，否则仍保留原始证据并标记为 partial-real。',
+      `${privilege.detail} 在 Linux 上支持面向 PID 的 raw snapshot；当 bpftrace 输出可解析时会提升到结构化热点，否则仍保留原始证据并标记为 partial-real。`,
     );
   }
 
