@@ -24,6 +24,7 @@ import type {
 import { buildArtifactPreviewMetadata } from './artifact-preview.js';
 import {
   appendAuditTrailEvent,
+  ensureStorageLayout,
   persistAgentSnapshot,
   persistArtifactIndex,
   persistReasonerSnapshot,
@@ -67,12 +68,24 @@ function normalizeState(raw: unknown): AppState {
 }
 
 async function readState(): Promise<AppState> {
+  await ensureStorageLayout();
+  let parsed: AppState;
   try {
     const raw = await fs.readFile(statePath, 'utf8');
-    return normalizeState(JSON.parse(raw));
+    parsed = normalizeState(JSON.parse(raw));
   } catch {
-    return emptyState();
+    parsed = emptyState();
   }
+
+  const recovered = await rehydrateStateFromSnapshots(parsed);
+  const tasksRecovered = recovered.tasks.length > parsed.tasks.length;
+  const agentsRecovered = recovered.agents.length > parsed.agents.length;
+  if (tasksRecovered || agentsRecovered) {
+    await writeState(recovered);
+    return recovered;
+  }
+
+  return parsed;
 }
 
 async function writeState(state: AppState) {
@@ -121,6 +134,68 @@ async function normalizeArtifacts(taskId: string, artifacts: TaskArtifact[]) {
     (artifact, index, all) =>
       all.findIndex((candidate) => candidate.kind === artifact.kind && candidate.path === artifact.path) === index,
   );
+}
+
+async function rehydrateStateFromSnapshots(state: AppState): Promise<AppState> {
+  const [tasks, agents] = await Promise.all([
+    state.tasks.length > 0 ? Promise.resolve(state.tasks) : readTaskSnapshots(),
+    state.agents.length > 0 ? Promise.resolve(state.agents) : readAgentSnapshots(),
+  ]);
+
+  if (tasks.length === state.tasks.length && agents.length === state.agents.length) {
+    return state;
+  }
+
+  return {
+    ...state,
+    tasks,
+    agents,
+  };
+}
+
+async function readTaskSnapshots(): Promise<TaskDetail[]> {
+  const files = await listJsonSnapshotFiles(storageLayout.tasksDir);
+  const tasks = await Promise.all(
+    files.map(async (filePath) => {
+      try {
+        const raw = await fs.readFile(filePath, 'utf8');
+        return normalizeStoredTask(JSON.parse(raw));
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return sortTasks(tasks.filter((task): task is TaskDetail => Boolean(task)));
+}
+
+async function readAgentSnapshots(): Promise<AgentSummary[]> {
+  const files = await listJsonSnapshotFiles(storageLayout.agentsDir);
+  const agents = await Promise.all(
+    files.map(async (filePath) => {
+      try {
+        const raw = await fs.readFile(filePath, 'utf8');
+        return normalizeAgent(JSON.parse(raw) as AgentSummary);
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return agents
+    .filter((agent): agent is AgentSummary => Boolean(agent))
+    .sort((left, right) => Date.parse(right.lastHeartbeatAt) - Date.parse(left.lastHeartbeatAt));
+}
+
+async function listJsonSnapshotFiles(dirPath: string) {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => path.join(dirPath, entry.name));
+  } catch {
+    return [];
+  }
 }
 
 function severityForStatus(status: TaskStatus): TaskAuditEvent['severity'] {

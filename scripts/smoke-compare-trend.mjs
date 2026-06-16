@@ -2,6 +2,7 @@ const base = process.env.MINI_DROP_BASE_URL || 'http://127.0.0.1:8787';
 const timeoutMs = Number(process.env.MINI_DROP_WAIT_MS || 90000);
 const pollMs = Number(process.env.MINI_DROP_POLL_MS || 1000);
 const expectReasonerFallback = process.env.MINI_DROP_EXPECT_REASONER_FALLBACK === '1';
+const expectRealPySpy = process.env.MINI_DROP_EXPECT_REAL_PYSPY === '1';
 const pidTargetOnly = process.argv.includes('--pid-target-only');
 
 const payload = {
@@ -163,6 +164,16 @@ async function main() {
   if (!reasonerBody?.taskId) {
     throw new Error('Reasoner response missing task id.');
   }
+  if (expectRealPySpy) {
+    const sampleSource = String(current.sampleSource ?? '');
+    const attachDecision = String(current.targetContext?.attachDecision ?? '');
+    if (!sampleSource.includes('py-spy') || sampleSource.includes('fallback')) {
+      throw new Error(`Expected compare-trend current sampleSource to use real py-spy, received ${sampleSource || 'missing'}.`);
+    }
+    if (/fallback/i.test(attachDecision)) {
+      throw new Error(`Expected compare-trend current attach decision to avoid fallback, received: ${attachDecision}`);
+    }
+  }
   if (expectReasonerFallback && !reasonerBody?.snapshot?.output?.fallbackReason) {
     throw new Error('Expected reasoner fallback metadata, but no fallbackReason was retained.');
   }
@@ -179,6 +190,9 @@ async function main() {
 
   console.log(`baseline=${baseline.id} status=${baseline.status}`);
   console.log(`current=${current.id} status=${current.status}`);
+  if (expectRealPySpy) {
+    console.log(`sampleSource=${current.sampleSource ?? 'missing'}`);
+  }
   console.log(`comparison=${comparisonBody.comparison.verdict} driver=${comparisonBody.comparison.driver?.label ?? 'none'}`);
   console.log(
     `trendPoints=${trendsBody.points.length} hotspotChanges=${trendsBody.hotspotChanges.length} processVariants=${trendsBody.historySummary.processVariants}`,

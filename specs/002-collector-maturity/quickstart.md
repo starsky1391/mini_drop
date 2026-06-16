@@ -14,6 +14,13 @@ This document describes the current maturity state of each collector on the acti
 - **Node.js**: 22.x
 - **Architecture**: x64
 
+### Additional Validated Linux Replay Host
+
+- **Platform**: Ubuntu Server 24.04.4 LTS
+- **Validation Date**: 2026-06-16
+- **Agent Mode**: independent Linux agent against the local Mini-Drop API
+- **Privilege Path**: `sudo-password`
+
 ### Collector Maturity States
 
 | Collector | Expected Maturity | Readiness | Notes |
@@ -68,6 +75,12 @@ npm run smoke:compare-trend
 # Continuous profile smoke
 npm run smoke:continuous-profile
 
+# Linux perf attach proof
+npm run smoke:perf-linux
+
+# Linux eBPF proof
+npm run smoke:ebpf-linux
+
 # Validate offline agent
 npm run validate:offline-agent
 ```
@@ -91,6 +104,28 @@ fetch(base+'/api/tasks', {
 "
 ```
 
+Linux real-validation notes:
+
+```bash
+# Ubuntu install
+python3 -m pip install --user py-spy --break-system-packages
+
+# Restart Mini-Drop Linux agent after install
+~/work/mini_drop/scripts/restart-linux-agent.sh ~/work/mini_drop admin123456 linux-agent-1 linux-agent http://127.0.0.1:8787
+
+# Require real py-spy during smoke
+MINI_DROP_EXPECT_REAL_PYSPY=1 npm run smoke:create-task
+MINI_DROP_EXPECT_REAL_PYSPY=1 npm run smoke:compare-trend
+MINI_DROP_EXPECT_REAL_PYSPY=1 npm run smoke:continuous-profile
+```
+
+Validated Ubuntu result:
+
+- `smoke:create-task` completed with `sampleSource=python-stack-sampling:py-spy`
+- `smoke:compare-trend` completed with real `py-spy` evidence across compare/trend/history flows
+- `smoke:continuous-profile` completed with real `py-spy` evidence and retained history slices after queued work drained
+- On this host `py-spy` required the configured sudo path because direct attach hit Linux ptrace restrictions
+
 ### async-profiler (Partial on Windows)
 
 ```bash
@@ -103,14 +138,32 @@ fetch(base+'/api/tasks', {
 ```bash
 # On Windows: marked as deferred-for-linux-proof
 # On Linux: attempts perf record + perf script
+
+# Dedicated Linux proof
+npm run smoke:perf-linux
 ```
+
+Validated Ubuntu result:
+
+- `smoke:perf-linux` completed with `sampleSource=native-stack-sampling:perf-script`
+- The Linux agent probe reported `readiness=preferred`
+- Retained Linux evidence included `perf.data`, `perf script output`, collapsed stacks, and collection-path provenance
 
 ### eBPF (Deferred on non-Linux)
 
 ```bash
 # On Windows: marked as deferred-for-linux-proof
 # On Linux: attempts bpftrace PID attach
+
+# Dedicated Linux proof
+npm run smoke:ebpf-linux
 ```
+
+Validated Ubuntu result:
+
+- `smoke:ebpf-linux` completed with `sampleSource=kernel-aware-sampling:bpftrace-raw`
+- This host currently proves `partial-real` rather than fully normalized `real`
+- Raw `bpftrace` evidence was retained and the stronger snapshot parser reduced fallback-shaped hotspot interpretation
 
 ## UI Verification
 
@@ -133,13 +186,38 @@ The following test cases validate collector maturity:
 - `assessPySpyCollection distinguishes retained speedscope output from placeholder fallback paths` — verifies py-spy assessment
 - `assessAsyncProfilerCollection distinguishes real, partial-real, and fallback JVM capture paths` — verifies async-profiler assessment
 - `assessEbpfCollection distinguishes raw-snapshot partial-real paths from fallback` — verifies eBPF assessment
+- `parseBpftraceSnapshot supports inline count-based bpftrace output` — verifies stronger raw snapshot parsing
+
+## Linux Follow-up Replay
+
+When validating on Ubuntu after the local Windows round:
+
+1. Install `py-spy` into the Linux user environment.
+2. Restart both the Linux server and Linux agent if collector env changed.
+3. Run `MINI_DROP_EXPECT_REAL_PYSPY=1 npm run smoke:create-task`.
+4. Run `MINI_DROP_EXPECT_REAL_PYSPY=1 npm run smoke:compare-trend`.
+5. Run `MINI_DROP_EXPECT_REAL_PYSPY=1 npm run smoke:continuous-profile`.
+6. Run `npm run smoke:perf-linux`.
+7. Run `npm run smoke:ebpf-linux`.
+
+Expected direction:
+
+- `py-spy` should move from fallback to `real`
+- `perf` should prove at least `partial-real` on Linux, ideally `real`
+- `eBPF` should keep `bpftrace` evidence and move toward stronger structured hotspot interpretation
+
+Observed Ubuntu 2026-06-16 result:
+
+- `py-spy`: reached `real`
+- `perf`: reached `real` through `perf-script`
+- `eBPF`: reached `partial-real` through retained `bpftrace-raw`
 
 ## Deferred Linux Proof Items
 
-The following items are explicitly deferred to a future Linux validation round:
+The following items remain explicitly deferred beyond the current Ubuntu replay proof:
 
-1. **eBPF 现场真跑**: Linux 现场 eBPF 异常注入与强证明
-2. **perf 真实链路**: Linux 上 perf record + perf script 的完整真实链路验证
+1. **eBPF 强证明**: Linux 现场异常注入、可视化变化联动、以及从 `bpftrace-raw` 进一步走到更强结构化热点证明
+2. **async-profiler Linux/JVM proof**: 当前仍未在目标 Linux/JVM 环境完成与 `py-spy` / `perf` 同等级的真实 attach 演示
 3. **远程 Linux Agent**: 远程 Linux VM 编排
 
-These items are marked as `deferred-for-linux-proof` in the codebase rather than falsely claiming completion.
+These items remain deferred so the codebase does not over-claim beyond the current Ubuntu replay validation.

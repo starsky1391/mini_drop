@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { promisify } from 'node:util';
 import { getScenario } from '../../shared/catalog.js';
@@ -10,6 +11,7 @@ import { buildCollapsedFromHotspots, mergeHotspots, parseSpeedscopeProfile } fro
 import type { ParsedProfileSummary } from './profile-utils.js';
 import { createCollectorSession } from './session.js';
 import { persistCollectionPathDecision } from './collection-path.js';
+import { probeLinuxPrivilegeSupport, runLinuxCollectorCommand } from './linux-privileged.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,8 +62,8 @@ export const pySpyCollector: CollectorPlugin = {
     let speedscopeArtifactRetained = false;
 
     try {
-      const pySpyBin = process.env.MINI_DROP_PYSPY_BIN || 'py-spy';
-      if (await isPySpyAvailable(pySpyBin)) {
+      const pySpyBin = await resolvePySpyCommand();
+      if (pySpyBin) {
         const pySpyArgs = [
           'record',
           '--pid',
@@ -76,8 +78,19 @@ export const pySpyCollector: CollectorPlugin = {
           'speedscope',
         ];
         collectionCommand = `${pySpyBin} ${pySpyArgs.join(' ')}`;
-        const result = await execFileAsync(pySpyBin, pySpyArgs);
-        session.log('capture', result.stderr?.trim() || 'py-spy record completed.');
+        let result: Awaited<ReturnType<typeof execFileAsync>> | Awaited<ReturnType<typeof runLinuxCollectorCommand>>;
+        if (process.platform === 'linux') {
+          const linuxPrivilege = await probeLinuxPrivilegeSupport();
+          session.log('prepare', linuxPrivilege.detail);
+          result = await runLinuxCollectorCommand(pySpyBin, pySpyArgs, {
+            timeoutMs: Math.max(15_000, durationSeconds * 2_000),
+            requirePrivilege: true,
+          });
+        } else {
+          result = await execFileAsync(pySpyBin, pySpyArgs);
+        }
+        const stderrText = typeof result.stderr === 'string' ? result.stderr : result.stderr?.toString('utf8');
+        session.log('capture', stderrText?.trim() || 'py-spy record completed.');
         const retention = await ensureArtifactFile(
           speedscopePath,
           JSON.stringify(buildSpeedscopePayload(scenario.name, scenario.topFunctions[0].name), null, 2),
@@ -95,7 +108,7 @@ export const pySpyCollector: CollectorPlugin = {
         await fs.writeFile(speedscopePath, speedscopeText, 'utf8');
         speedscopeArtifactRetained = true;
         session.addArtifact('speedscope', speedscopePath, 'Speedscope profile');
-        session.log('fallback', 'py-spy unavailable; speedscope placeholder created.');
+        session.log('fallback', `py-spy unavailable (${pySpyCommandCandidates().join(', ')}); speedscope placeholder created.`);
       }
     } catch (error) {
       commandError = error instanceof Error ? error.message : 'py-spy command failed';
@@ -211,13 +224,30 @@ export const pySpyCollector: CollectorPlugin = {
   },
 };
 
-async function isPySpyAvailable(command: string) {
-  try {
-    await execFileAsync(command, ['--version']);
-    return true;
-  } catch {
-    return false;
+async function resolvePySpyCommand() {
+  for (const command of pySpyCommandCandidates()) {
+    try {
+      await execFileAsync(command, ['--version']);
+      return command;
+    } catch {
+      continue;
+    }
   }
+
+  return null;
+}
+
+function pySpyCommandCandidates() {
+  const candidates = new Set<string>();
+  const configured = process.env.MINI_DROP_PYSPY_BIN?.trim();
+  if (configured) {
+    candidates.add(configured);
+  }
+  candidates.add('py-spy');
+  if (process.platform === 'linux') {
+    candidates.add(`${os.homedir()}/.local/bin/py-spy`);
+  }
+  return [...candidates];
 }
 
 function buildSyntheticReport(

@@ -16,6 +16,7 @@
     "smoke:create-task": "node scripts/smoke-create-task.mjs",
     "smoke:repeat-task": "node scripts/smoke-repeat-task.mjs",
     "smoke:ebpf-linux": "node scripts/smoke-ebpf-linux.mjs",
+    "smoke:perf-linux": "node scripts/smoke-perf-linux.mjs",
     "smoke:process-target": "node scripts/smoke-compare-trend.mjs --pid-target-only",
     "smoke:compare-trend": "node scripts/smoke-compare-trend.mjs",
     "smoke:continuous-profile": "node scripts/smoke-continuous-profile.mjs",

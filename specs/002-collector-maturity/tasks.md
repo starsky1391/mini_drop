@@ -120,6 +120,14 @@
 
 ---
 
+## Phase 7: Linux Real-Collector Follow-up
+
+**Purpose**: Turn the remaining Linux collector gaps into explicit execution tasks instead of keeping them as feature-level goals.
+
+- [X] T024 [P] Add real Linux `py-spy` validation in `scripts/smoke-create-task.mjs`, `scripts/smoke-compare-trend.mjs`, `scripts/smoke-continuous-profile.mjs`, `server/agent/probe.ts`, and `specs/002-collector-maturity/quickstart.md` so Ubuntu runs can detect installed `py-spy`, classify Python collection as real instead of fallback, and record the install / restart / revalidation flow for the Linux agent
+- [X] T025 [P] Improve `eBPF` raw-snapshot parsing in `server/collectors/ebpf.ts`, `server/collectors/profile-utils.ts`, `server/analysis/normalize.ts`, `server/analysis/narrative.ts`, and `tests/run-tests.ts` so `bpftrace-raw` evidence produces stronger structured hotspots, reduces fallback-shaped ranking, and moves Linux `eBPF` runs closer to true real-sample interpretation
+- [X] T026 [P] Add dedicated Linux `perf` attach proof in `scripts/smoke-perf-linux.mjs`, `package.json`, `server/collectors/perf.ts`, `server/agent/probe.ts`, and `specs/002-collector-maturity/quickstart.md` so native / Go / C++ profiling has a repeatable `smoke:perf-linux` path that verifies privileged attach, retained artifacts, and collector provenance on Ubuntu
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -149,6 +157,7 @@
 - `T009` and `T010` can run in parallel because they focus on collector readiness versus attach-fit reasoning.
 - `T014` and `T015` can run in parallel before `T016` integrates them into the task-detail flow.
 - `T019`, `T020`, and `T021` can run in parallel once the user-story behavior stabilizes.
+- `T024`, `T025`, and `T026` can run in parallel because they target distinct Linux proof gaps.
 
 ---
 
@@ -174,6 +183,14 @@ T013 [US2] Extend smoke coverage for artifact preview parity in scripts/smoke-co
 T019 [US3] Add collector maturity matrix summaries to server outputs
 T020 [US3] Improve validation record generation in README.md and specs/002-collector-maturity/plan.md
 T021 [US3] Update specs/002-collector-maturity/quickstart.md with the collector maturity replay matrix
+```
+
+## Parallel Example: Linux Real-Collector Follow-up
+
+```text
+T024 Add real Linux py-spy validation and reclassification across smoke scripts, probe logic, and quickstart
+T025 Improve eBPF raw-snapshot parsing and hotspot structuring across collector, analysis, and regression files
+T026 Add a dedicated smoke:perf-linux proof path across scripts, package.json, probe logic, and quickstart
 ```
 
 ---
@@ -204,6 +221,7 @@ With multiple contributors:
 2. One lane handles readiness classification and attach-fit semantics (`T007`-`T011`).
 3. One lane handles artifact parity and symbolization consistency (`T012`-`T016`).
 4. One lane handles validation matrix, docs, and replay guidance (`T017`-`T023`).
+5. One lane handles Linux real-collector follow-up proof (`T024`-`T026`).
 
 ---
 
@@ -211,3 +229,4 @@ With multiple contributors:
 
 - Tasks deliberately avoid re-implementing the already completed local Mini-Drop baseline.
 - This round focuses on reducing collector maturity asymmetry and making deferred Linux proof explicit rather than pretending it is already complete.
+- The remaining Linux follow-up tasks are intentionally phrased as execution work, not feature goals, so they can be assigned directly.

@@ -32,10 +32,11 @@ import {
   getTaskReasonerSnapshot,
   listAuditEvents,
   getTask,
+  listTasks,
   buildTaskResultIndex,
   upsertAgent,
 } from '../server/store.js';
-import { cancelTaskExecution, collectTaskExecution } from '../server/execution.js';
+import { cancelTaskExecution, collectTaskExecution, finalizeUploadedTaskExecution } from '../server/execution.js';
 import {
   acceptAgentHeartbeat,
   acceptAgentUploadResult,
@@ -48,13 +49,14 @@ import {
   sweepOfflineAgents,
   validateTaskCreateInput,
 } from '../server/services/task-service.js';
-import { readStagedCollectorOutcome } from '../server/storage/repository.js';
+import { persistStagedCollectorOutcome, readStagedCollectorOutcome } from '../server/storage/repository.js';
 import { buildTaskTrends } from '../server/trends.js';
 import { collectorCapabilities } from '../server/collectors/index.js';
 import { probeAgentEnvironment } from '../server/agent/probe.js';
 import { collectors } from '../shared/catalog.js';
 import { buildFlameGraphRows, searchFlameGraph } from '../src/flamegraph-utils.js';
 import { attachSourceLabel, formatProcessSummary, normalizeDetailTabSelection, visibleDetailTabs } from '../src/ui-model.js';
+import { storageLayout } from '../server/storage/layout.js';
 
 test('createTaskDetail returns a complete report', () => {
   const task = createTaskDetail({
@@ -305,6 +307,21 @@ test('parseBpftraceSnapshot preserves normalized hotspots when raw snapshots are
   assert.match(parsed?.collapsedStacks ?? '', /compressPayload/);
 });
 
+test('parseBpftraceSnapshot supports inline count-based bpftrace output', () => {
+  const parsed = parseBpftraceSnapshot(`
+@[ustack]
+app.so\`decodeFields+0x3;app.so\`compressPayload+0x8 6
+@[ustack]
+app.so\`decodeFields+0x3;app.so\`writeResponse+0x2 3
+`);
+
+  assert.ok(parsed);
+  assert.equal(parsed?.usedRealData, true);
+  assert.equal(parsed?.evidence.sourceKind, 'bpftrace-raw');
+  assert.equal(parsed?.topFunctions[0]?.name, 'compressPayload');
+  assert.ok(parsed?.evidence.stackCount ?? 0 > 0);
+});
+
 test('collector registry exposes async-profiler and ebpf plugins', () => {
   const ids = collectorCapabilities.map((capability) => capability.id);
   assert.ok(ids.includes('async-profiler'));
@@ -439,6 +456,28 @@ test('assessPySpyCollection distinguishes retained speedscope output from placeh
   assert.match(partial.rawSignal, /py-spy:partial/);
 });
 
+test('probeAgentEnvironment reports Linux py-spy privilege context in readiness detail', async () => {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  const probe = await probeAgentEnvironment({
+    capability: {
+      id: 'py-spy',
+      name: 'py-spy',
+      languages: ['Python'],
+      description: 'Capture Python stacks with py-spy record and speedscope export.',
+      supportsRealCollection: true,
+    },
+    collect: async () => {
+      throw new Error('not used');
+    },
+  });
+
+  assert.equal(probe.collectors[0]?.collector, 'py-spy');
+  assert.match(probe.collectors[0]?.detail ?? '', /sudo=|ptrace|Linux 上会优先尝试真实 attach/);
+});
+
 test('assessAsyncProfilerCollection distinguishes real, partial-real, and fallback JVM capture paths', () => {
   const real = assessAsyncProfilerCollection({
     command: 'asprof -d 8 -f out.collapsed -o collapsed 1234',
@@ -506,6 +545,21 @@ test('assessEbpfCollection distinguishes raw-snapshot partial-real paths from fa
   });
   assert.equal(partial.mode, 'partial-real');
   assert.match(partial.reason, /PID 4321/);
+
+  const inlineReal = assessEbpfCollection({
+    platform: 'linux',
+    command: 'bpftrace -e profile:hz:99',
+    commandError: null,
+    rawSnapshot: '@[ustack]\napp.so`decodeFields+0x3;app.so`compressPayload+0x8 7',
+    parsedProfile: {
+      usedRealData: true,
+      sampleCount: 7,
+      evidence: { sourceKind: 'bpftrace-raw' },
+    } as never,
+    requestedPid: 4321,
+  });
+  assert.equal(inlineReal.mode, 'real');
+  assert.match(inlineReal.notes[0] ?? '', /structured hotspot evidence/);
 
   const fallback = assessEbpfCollection({
     platform: 'linux',
@@ -679,6 +733,29 @@ test('saveTask retains targetContext metadata across persistence and reload', as
   assert.equal(saved?.targetContext.targetType, 'pid');
   assert.equal(saved?.targetContext.attachSource, 'external-pid');
   assert.equal(saved?.targetContext.processInfo?.pid, process.pid);
+});
+
+test('readState rehydrates task snapshots when state.json is empty', async () => {
+  const task = createQueuedTask({
+    target: `rehydrate-task-${Date.now()}@local`,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+
+  await saveTask(task);
+  await fs.writeFile(
+    storageLayout.stateFile,
+    JSON.stringify({ stateVersion: 2, tasks: [], agents: [], auditEvents: [] }, null, 2),
+    'utf8',
+  );
+
+  const recovered = await getTask(task.id);
+  assert.ok(recovered);
+  assert.equal(recovered?.id, task.id);
+
+  const listed = await listTasks({ target: task.target });
+  assert.ok(listed.some((item) => item.id === task.id));
 });
 
 test('loadTaskRunState exposes active probe readiness while a managed runner snapshot is retained', async () => {
@@ -903,6 +980,86 @@ test('agent upload-result records upload state and releases the current lease', 
   assert.ok(auditEvents.some((event) => (event.detail ?? '').includes('collector artifacts staged')));
   assert.ok(auditEvents.some((event) => event.message.includes('上传')));
   assert.ok(auditEvents.some((event) => event.message.includes('暂存')));
+});
+
+test('finalizeUploadedTaskExecution tolerates slightly delayed staged collector outcomes', async () => {
+  const task = createQueuedTask({
+    target: `delayed-stage-${Date.now()}@local`,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+  await saveTask({
+    ...task,
+    status: 'UPLOADING',
+    statusReason: 'Agent 已完成采样并暂存产物。',
+    uploadState: 'uploaded',
+    progress: 86,
+    updatedAt: new Date().toISOString(),
+  });
+
+  const synthetic = createTaskDetail({
+    target: task.target,
+    language: task.language,
+    collector: task.collector,
+    scenario: task.scenario,
+  });
+
+  void (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await persistStagedCollectorOutcome({
+      taskId: task.id,
+      stagedAt: new Date().toISOString(),
+      source: 'agent',
+      input: {
+        target: task.target,
+        language: task.language,
+        collector: task.collector,
+        scenario: task.scenario,
+        targetType: task.targetContext.targetType,
+        pid: task.targetContext.processInfo?.pid,
+        processInfo: task.targetContext.processInfo,
+        attachSource: task.targetContext.attachSource,
+      },
+      outcome: {
+        status: 'UPLOADING',
+        progress: 72,
+        artifacts: synthetic.artifacts,
+        sample: {
+          sampleCount: synthetic.sampleCount,
+          topFunctions: synthetic.topFunctions,
+          metrics: synthetic.metrics,
+          summary: synthetic.reportSummary,
+          rawSignal: synthetic.sampleSource,
+          workloadReportPath: '',
+        },
+        report: {
+          scenario: task.scenario,
+          collector: task.collector,
+          target: task.target,
+          title: synthetic.reportTitle.replace(/ 诊断$/, ''),
+          durationMs: 8000,
+          result: 1,
+          metrics: synthetic.metrics,
+          topFunctions: synthetic.topFunctions,
+          summary: synthetic.reportSummary,
+        },
+        logs: ['delayed staged outcome ready'],
+      },
+    });
+  })();
+
+  const finalized = await finalizeUploadedTaskExecution(task.id, {
+    source: 'agent',
+    statusReason: 'Agent 已完成上传，server 正在基于暂存产物生成最终分析结果。',
+  });
+
+  assert.ok(finalized);
+  assert.equal(finalized?.status, 'DONE');
+  assert.equal(finalized?.uploadState, 'uploaded');
+  assert.notEqual(finalized?.sampleSource, 'staged-missing');
+  const stagedAfter = await readStagedCollectorOutcome(task.id);
+  assert.equal(stagedAfter, null);
 });
 
 test('saveTask emits lifecycle audit when only status reason changes', async () => {

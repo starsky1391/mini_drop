@@ -203,6 +203,7 @@ export function parseBpftraceSnapshot(text: string): ParsedProfileSummary | null
   const samples: WeightedStack[] = [];
   let currentFrames: ParsedFrame[] = [];
   let currentThreadLabel: string | null = null;
+  let pendingWeight: number | null = null;
 
   const flushFrames = (weight: number) => {
     if (currentFrames.length === 0 || weight <= 0) {
@@ -223,23 +224,51 @@ export function parseBpftraceSnapshot(text: string): ParsedProfileSummary | null
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) {
+      if (pendingWeight && currentFrames.length > 0) {
+        flushFrames(pendingWeight);
+        pendingWeight = null;
+      }
       continue;
     }
 
     if (/^@\[[^\]]+\]:?$/.test(trimmed)) {
+      if (pendingWeight && currentFrames.length > 0) {
+        flushFrames(pendingWeight);
+        pendingWeight = null;
+      }
       currentThreadLabel = sanitizeThreadLabel(trimmed.replace(/^@\[/, '').replace(/\]:?$/, ''));
       continue;
     }
 
-    if (/^\d+$/.test(trimmed)) {
-      flushFrames(Math.max(1, Number(trimmed)));
+    const countMatch = trimmed.match(/^(?:count[:=]\s*)?(?<count>\d+)$/i);
+    if (countMatch?.groups?.count) {
+      pendingWeight = Math.max(1, Number(countMatch.groups.count));
+      flushFrames(pendingWeight);
+      pendingWeight = null;
+      continue;
+    }
+
+    const inlineFrame = parseInlineBpftraceSample(trimmed);
+    if (inlineFrame) {
+      samples.push({
+        frames: inlineFrame.frames,
+        weight: inlineFrame.weight,
+        threadLabel: inlineFrame.threadLabel ?? currentThreadLabel,
+      });
+      currentFrames = [];
+      currentThreadLabel = null;
       continue;
     }
 
     const parsedFrame = parseBpftraceFrame(trimmed);
     if (parsedFrame) {
       currentFrames.push(parsedFrame);
+      continue;
     }
+  }
+
+  if (pendingWeight && currentFrames.length > 0) {
+    flushFrames(pendingWeight);
   }
 
   return summarizeStacks(samples, 'bpftrace-raw');
@@ -383,13 +412,23 @@ function parseBpftraceFrame(token: string): ParsedFrame | null {
     return null;
   }
 
-  const withoutPrefix = trimmed.replace(/^user:\s*/i, '').replace(/^kernel:\s*/i, '').trim();
+  const withoutPrefix = trimmed
+    .replace(/^user:\s*/i, '')
+    .replace(/^kernel:\s*/i, '')
+    .replace(/^ustack:\s*/i, '')
+    .replace(/^kstack:\s*/i, '')
+    .trim();
   const normalized = withoutPrefix.replace(/^\d+\s+/, '');
   const source = extractSourceLocation(normalized);
   const sourcePath = source?.path ?? '';
   const baseArea = source ? normalized.slice(0, source.index).trim() : normalized;
-  const moduleSplit = baseArea.includes('`') ? baseArea.split('`') : baseArea.includes(':') ? baseArea.split(':') : [baseArea];
-  const moduleCandidate = moduleSplit.length > 1 ? moduleSplit[0]?.trim() || 'kernel' : deriveModuleFromName(baseArea);
+  const baseWithoutAddress = baseArea.replace(/^(0x)?[0-9a-f]+\s+/i, '').trim();
+  const moduleSplit = baseWithoutAddress.includes('`')
+    ? baseWithoutAddress.split('`')
+    : baseWithoutAddress.includes(':')
+      ? baseWithoutAddress.split(':')
+      : [baseWithoutAddress];
+  const moduleCandidate = moduleSplit.length > 1 ? normalizeBpftraceModuleName(moduleSplit[0]?.trim() || 'kernel') : deriveModuleFromName(baseWithoutAddress);
   const symbolArea = moduleSplit.length > 1 ? moduleSplit.slice(1).join('`').trim() : baseArea.trim();
   const symbol = sanitizeSymbol(symbolArea) ?? sanitizeFrameName(symbolArea);
   if (!symbol) {
@@ -411,10 +450,33 @@ function parseBpftraceFrame(token: string): ParsedFrame | null {
       hasFile: hasExplicitPath || Boolean(file && file !== moduleCandidate),
       hasLine: source?.line !== null && source?.line !== undefined,
       module: moduleCandidate,
-      syntheticHint: !hasExplicitPath && moduleCandidate.toLowerCase().includes('unknown'),
+      syntheticHint: !hasExplicitPath && isFallbackLikeModule(moduleCandidate),
     }),
     mappingSource: hasExplicitPath ? 'retained' : 'derived-symbol',
     address: null,
+  };
+}
+
+function parseInlineBpftraceSample(text: string) {
+  const match = text.match(/^(?<stack>.+?)\s+(?<count>\d+)$/);
+  if (!match?.groups?.stack || !match.groups.count) {
+    return null;
+  }
+
+  const frames = match.groups.stack
+    .split(/[;>]+/)
+    .map((part) => part.trim())
+    .map(parseBpftraceFrame)
+    .filter((frame): frame is ParsedFrame => frame !== null);
+
+  if (frames.length === 0) {
+    return null;
+  }
+
+  return {
+    frames,
+    weight: Math.max(1, Number(match.groups.count)),
+    threadLabel: null as string | null,
   };
 }
 
@@ -672,6 +734,19 @@ function deriveModuleFromName(name: string) {
     return name.split('.').slice(0, -1).join('.') || 'python';
   }
   return 'python';
+}
+
+function normalizeBpftraceModuleName(name: string) {
+  const normalized = name
+    .replace(/^\[[^\]]+\]$/, 'kernel')
+    .replace(/^\/proc\/self\/root\//, '/')
+    .trim();
+  return normalized || 'kernel';
+}
+
+function isFallbackLikeModule(moduleName: string) {
+  const normalized = moduleName.toLowerCase();
+  return normalized.includes('unknown') || normalized.includes('synthetic') || normalized === 'python';
 }
 
 function basenameOrSelf(value: string) {

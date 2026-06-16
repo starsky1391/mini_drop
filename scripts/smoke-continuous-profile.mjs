@@ -1,6 +1,7 @@
 const base = process.env.MINI_DROP_BASE_URL || 'http://127.0.0.1:8787';
 const timeoutMs = Number(process.env.MINI_DROP_WAIT_MS || 90000);
 const pollMs = Number(process.env.MINI_DROP_POLL_MS || 1000);
+const expectRealPySpy = process.env.MINI_DROP_EXPECT_REAL_PYSPY === '1';
 
 const payload = {
   target: 'continuous-smoke@local',
@@ -70,9 +71,18 @@ async function main() {
   if (historyWindow.window.slices.at(-1)?.taskId !== second.id) {
     throw new Error('History-scope continuous profile window did not keep the latest run as the newest slice.');
   }
+  if (expectRealPySpy) {
+    const sampleSource = String(second.sampleSource ?? '');
+    if (!sampleSource.includes('py-spy') || sampleSource.includes('fallback')) {
+      throw new Error(`Expected continuous-profile latest run to use real py-spy, received ${sampleSource || 'missing'}.`);
+    }
+  }
 
   console.log(`first=${first.id} status=${first.status}`);
   console.log(`second=${second.id} status=${second.status}`);
+  if (expectRealPySpy) {
+    console.log(`sampleSource=${second.sampleSource ?? 'missing'}`);
+  }
   console.log(`taskWindow=${taskWindow.window.sliceCount}`);
   console.log(`historyWindow=${historyWindow.window.sliceCount}`);
   console.log(

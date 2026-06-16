@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { TaskCreateInput, TaskDetail, TaskUploadState } from '../shared/types.js';
 import { finalizeTask } from './analysis.js';
 import { compareTasks } from './comparison.js';
@@ -53,7 +54,7 @@ export async function finalizeUploadedTaskExecution(taskId: string, options: Fin
     return null;
   }
 
-  const staged = await readStagedCollectorOutcome(taskId);
+  const staged = await waitForStagedCollectorOutcome(taskId);
   if (!staged) {
     const failedTask = await saveTask(
       buildFailedTask(task, {
@@ -145,6 +146,20 @@ export async function finalizeUploadedTaskExecution(taskId: string, options: Fin
     );
     return persistTerminalContinuousSlice(failedTask);
   }
+}
+
+async function waitForStagedCollectorOutcome(taskId: string) {
+  const attempts = 5;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const staged = await readStagedCollectorOutcome(taskId);
+    if (staged) {
+      return staged;
+    }
+    if (attempt < attempts - 1) {
+      await delay(150);
+    }
+  }
+  return null;
 }
 
 async function executeTaskExecution(taskId: string, input: TaskCreateInput, options: ExecuteTaskOptions) {
