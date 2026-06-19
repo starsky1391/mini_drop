@@ -1,0 +1,119 @@
+openapi: 3.1.0
+info:
+  title: Mini-Drop Linux Real Process Attach API
+  version: 1.0.0
+paths:
+  /api/processes:
+    get:
+      summary: List local processes that can be selected for a live attach proof
+      responses:
+        "200":
+          description: Process list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessListResponse"
+  /api/tasks:
+    post:
+      summary: Create a diagnosis task for a logical target or live Linux process
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreateRequest"
+      responses:
+        "200":
+          description: Created task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+  /api/tasks/{taskId}:
+    get:
+      summary: Fetch a task detail view including target context and evidence summary
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+components:
+  schemas:
+    ProcessListResponse:
+      type: object
+      required: [processes]
+      properties:
+        processes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProcessInfo"
+    ProcessInfo:
+      type: object
+      required: [pid, name, commandSummary]
+      properties:
+        pid:
+          type: integer
+        name:
+          type: string
+        commandSummary:
+          type: string
+        languageHint:
+          type: string
+          nullable: true
+    TaskCreateRequest:
+      type: object
+      required: [collectorId, scenarioId, targetType]
+      properties:
+        target:
+          type: string
+          nullable: true
+        targetType:
+          type: string
+          enum: [label, pid, process]
+        pid:
+          type: integer
+          nullable: true
+        processInfo:
+          $ref: "#/components/schemas/ProcessInfo"
+        collectorId:
+          type: string
+        scenarioId:
+          type: string
+    TaskDetail:
+      type: object
+      required: [id, status, targetContext]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        targetContext:
+          $ref: "#/components/schemas/TargetContext"
+        collectorId:
+          type: string
+        fallbackReason:
+          type: string
+          nullable: true
+    TargetContext:
+      type: object
+      required: [targetType, attachSource]
+      properties:
+        targetType:
+          type: string
+          enum: [label, pid, process]
+        attachSource:
+          type: string
+        pid:
+          type: integer
+          nullable: true
+        processInfo:
+          $ref: "#/components/schemas/ProcessInfo"
+          nullable: true

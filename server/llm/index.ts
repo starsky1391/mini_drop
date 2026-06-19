@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { buildReasonerToolDefinitions, buildReasonerToolRegistry } from './tool-registry.js';
 import type {
   ExternalReasonerConfig,
   ExternalReasonerModelConfig,
@@ -9,8 +11,13 @@ import type {
   ReasonerFinding,
   ReasonerInput,
   ReasonerOutput,
+  ReasonerRejectedCitation,
   ReasonerSnapshot,
   ReasonerTaskShape,
+  ReasonerToolDefinition,
+  ReasonerToolInvocation,
+  ReasonerToolName,
+  ReasonerToolRegistryEntry,
 } from './types.js';
 
 export async function buildReasonerSnapshot(task: ReasonerTaskShape): Promise<ReasonerSnapshot> {
@@ -123,7 +130,8 @@ function buildReasonerInput(task: ReasonerTaskShape): ReasonerInput {
     });
   }
 
-  return {
+  const availableTools = buildReasonerToolDefinitions() as ReasonerToolDefinition[];
+  const input: ReasonerInput = {
     taskId: task.id,
     reportTitle: task.reportTitle,
     reportSummary: task.reportSummary,
@@ -135,8 +143,14 @@ function buildReasonerInput(task: ReasonerTaskShape): ReasonerInput {
       '只能引用输入证据包中真实存在的 evidence id。',
       '如果证据不足，必须明确说明结论受限。',
       '不要虚构源码文件、行号或栈帧。',
+      '只能使用 availableTools 中声明的只读工具。',
     ],
+    availableTools,
+    toolContext: [],
   };
+
+  input.toolContext = buildInitialToolContext(input);
+  return input;
 }
 
 function metricEvidence(id: string, label: string, value: number): ReasonerEvidenceItem {
@@ -170,6 +184,18 @@ function buildSymbolizationEvidence(task: ReasonerTaskShape) {
   return `热点映射统计：full=${full}，partial=${partial}，synthetic=${synthetic}。主热点位置 ${task.topFunctions[0]?.locationSummary ?? task.topFunctions[0]?.module ?? 'unknown'}。`;
 }
 
+function buildInitialToolContext(input: ReasonerInput): ReasonerToolInvocation[] {
+  const toolCalls: Array<{ name: ReasonerToolName; args?: Record<string, unknown> }> = [
+    { name: 'get_task_evidence_bundle' },
+    { name: 'get_baseline_context' },
+  ];
+  if (input.evidence.some((item) => item.id.startsWith('artifact-'))) {
+    toolCalls.push({ name: 'get_artifact_excerpt', args: { artifactId: 'artifact-1' } });
+  }
+
+  return toolCalls.map((call) => runTool(call.name, input, call.args).invocation);
+}
+
 function buildDisabledReasonerOutput(input: ReasonerInput): ReasonerOutput {
   return {
     mode: 'disabled',
@@ -177,6 +203,8 @@ function buildDisabledReasonerOutput(input: ReasonerInput): ReasonerOutput {
     findings: [],
     citations: [],
     rejectedCitations: [],
+    rejectedCitationDetails: [],
+    toolInvocations: input.toolContext,
     generatedAt: new Date().toISOString(),
     guardrailStatus: 'enforced',
     fallbackReason: 'Reasoner 模式已禁用。',
@@ -188,7 +216,12 @@ function buildStubReasonerOutput(input: ReasonerInput): ReasonerOutput {
   const comparison = input.evidence.find((item) => item.kind === 'comparison');
   const cpu = input.evidence.find((item) => item.id === 'metric-cpu');
   const targetContext = input.evidence.find((item) => item.id === 'target-context');
-  const findings = [
+
+  const draftFindings: Array<{
+    title: string;
+    detail: string;
+    citations: string[];
+  }> = [
     hotspot
       ? {
           title: '主热点',
@@ -217,19 +250,32 @@ function buildStubReasonerOutput(input: ReasonerInput): ReasonerOutput {
           citations: [targetContext.id],
         }
       : null,
-  ].filter((item): item is NonNullable<typeof item> => item !== null);
+  ].filter((item): item is { title: string; detail: string; citations: string[] } => item !== null);
+
+  const validation = validateCitationsWithDetails(
+    draftFindings.flatMap((item) => item.citations),
+    input,
+  );
+  const validationInvocation = runTool('validate_citations', input, {
+    citations: draftFindings.flatMap((item) => item.citations),
+  }).invocation;
+
+  const findings = draftFindings.map((item) => ({
+    ...item,
+    citations: item.citations.filter((citation) => validation.accepted.includes(citation)),
+    status: item.citations.every((citation) => validation.accepted.includes(citation)) ? 'verified' : 'context-only',
+  })) satisfies ReasonerFinding[];
 
   return {
     mode: 'stub',
     summary:
       findings[0]?.detail ??
       '当前保留的证据包还不足以支持更强的基于证据摘要。',
-    findings: findings.map((item) => ({
-      ...item,
-      citations: filterEvidenceCitations(item.citations, input),
-    })),
-    citations: filterEvidenceCitations(findings.flatMap((item) => item.citations), input),
-    rejectedCitations: [],
+    findings,
+    citations: validation.accepted,
+    rejectedCitations: validation.rejected.map((item) => item.citation),
+    rejectedCitationDetails: validation.rejected,
+    toolInvocations: [...input.toolContext, validationInvocation],
     generatedAt: new Date().toISOString(),
     guardrailStatus: 'enforced',
     fallbackReason: null,
@@ -364,78 +410,171 @@ function normalizeExternalReasonerCandidate(input: ReasonerInput, payload: unkno
     summary: unknown;
     findings: unknown;
     citations: unknown;
+    toolCalls: unknown;
   }>;
+
+  const requestedToolCalls = normalizeToolCalls(candidate.toolCalls);
+  const toolInvocations: ReasonerToolInvocation[] = [...input.toolContext];
+  for (const call of requestedToolCalls) {
+    toolInvocations.push(runToolCallOrReject(input, call.name, call.args));
+  }
+
   const citations = Array.isArray(candidate.citations)
     ? candidate.citations.filter((item): item is string => typeof item === 'string')
     : [];
-  const filteredCitations = filterEvidenceCitations(citations, input);
+  const validation = validateCitationsWithDetails(citations, input);
+  const validationInvocation = runTool('validate_citations', input, {
+    citations,
+  }).invocation;
+  toolInvocations.push(validationInvocation);
+
   const findings = Array.isArray(candidate.findings)
     ? candidate.findings
-        .map((item) => normalizeExternalFinding(item))
+        .map((item) => normalizeExternalFinding(item, input))
         .filter((item): item is ReasonerFinding => item !== null)
-        .map((item) => ({
-          ...item,
-          citations: filterEvidenceCitations(item.citations, input),
-        }))
-        .filter((item) => item.citations.length > 0)
     : [];
+  const verifiedFindings = findings.filter((item) => item.status === 'verified');
+  const rejectedToolCount = toolInvocations.filter((item) => item.status === 'rejected').length;
+  const summary =
+    typeof candidate.summary === 'string' && candidate.summary.trim().length > 0
+      ? candidate.summary.trim()
+      : null;
+  const fallbackReasons: string[] = [];
+
+  if (rejectedToolCount > 0) {
+    fallbackReasons.push(`拒绝了 ${rejectedToolCount} 个未声明工具请求。`);
+  }
+  if (validation.rejected.length > 0) {
+    fallbackReasons.push(`过滤了 ${validation.rejected.length} 个无法映射回证据包的 citation。`);
+  }
+  if (!summary) {
+    fallbackReasons.push('外部 reasoner 没有返回基于证据的摘要。');
+  }
+  if (verifiedFindings.length === 0 && validation.accepted.length === 0) {
+    fallbackReasons.push('外部 reasoner 没有返回可验证的结论，已自动降级为安全摘要。');
+  }
+
+  if (verifiedFindings.length === 0 && validation.accepted.length === 0) {
+    return buildExternalUnavailableOutput(
+      input,
+      fallbackReasons.join(' '),
+      {
+        toolInvocations,
+        rejectedCitationDetails: validation.rejected,
+        findings,
+      },
+    );
+  }
+
+  const effectiveSummary = summary ?? buildGroundedSummaryFromFindings(verifiedFindings, input);
 
   return {
     mode: 'external',
-    summary:
-      typeof candidate.summary === 'string' && candidate.summary.trim().length > 0
-        ? candidate.summary.trim()
-        : '外部 reasoner 没有返回基于证据的摘要，因此当前只保留证据包。',
+    summary: effectiveSummary,
     findings,
-    citations: filteredCitations,
-    rejectedCitations: citations.filter((citation) => !filteredCitations.includes(citation)),
+    citations: validation.accepted,
+    rejectedCitations: validation.rejected.map((item) => item.citation),
+    rejectedCitationDetails: validation.rejected,
+    toolInvocations,
     generatedAt: new Date().toISOString(),
     guardrailStatus: 'enforced',
-    fallbackReason:
-      typeof candidate.summary === 'string' && candidate.summary.trim().length > 0
-        ? null
-        : '外部 reasoner 没有返回基于证据的摘要。',
+    fallbackReason: fallbackReasons.length > 0 ? fallbackReasons.join(' ') : null,
   };
 }
 
-function normalizeExternalFinding(candidate: unknown): ReasonerFinding | null {
+function normalizeExternalFinding(candidate: unknown, input: ReasonerInput): ReasonerFinding | null {
   if (!candidate || typeof candidate !== 'object') {
     return null;
   }
 
   const finding = candidate as Partial<ReasonerFinding>;
-  if (typeof finding.title !== 'string' || typeof finding.detail !== 'string' || !Array.isArray(finding.citations)) {
+  if (typeof finding.title !== 'string' || typeof finding.detail !== 'string') {
     return null;
   }
+
+  const citations = Array.isArray(finding.citations)
+    ? finding.citations.filter((item): item is string => typeof item === 'string')
+    : [];
+  const validation = validateCitationsWithDetails(citations, input);
 
   return {
     title: finding.title,
     detail: finding.detail,
-    citations: finding.citations.filter((item): item is string => typeof item === 'string'),
+    citations: validation.accepted,
+    status: validation.accepted.length > 0 ? 'verified' : 'context-only',
   };
 }
 
-function buildExternalUnavailableOutput(input: ReasonerInput, detail: string): ReasonerOutput {
+function buildExternalUnavailableOutput(
+  input: ReasonerInput,
+  detail: string,
+  options?: {
+    toolInvocations?: ReasonerToolInvocation[];
+    rejectedCitationDetails?: ReasonerRejectedCitation[];
+    findings?: ReasonerFinding[];
+  },
+): ReasonerOutput {
+  const safeDetail = detail.trim().length > 0 ? detail.trim() : '外部 reasoner 未返回可验证内容。';
   return {
     mode: 'external',
-    summary: `当前已配置外部 reasoner，但这次 API 调用没能产出基于证据的摘要。${detail}`,
-    findings: [
-      {
-        title: '外部 reasoner 不可用',
-        detail: `外部适配层已安全降级，并保留了 ${input.evidence.length} 条证据供离线复核。`,
-        citations: [],
-      },
-    ],
+    summary: `当前已配置外部 reasoner，但这次只拿到了不可验证或不完整的结果。${safeDetail}`,
+    findings:
+      options?.findings && options.findings.length > 0
+        ? options.findings.map((item) => ({
+            ...item,
+            citations: [],
+            status: 'context-only',
+          }))
+        : [
+            {
+              title: '外部 reasoner 已安全降级',
+              detail: `外部适配层已保留 ${input.evidence.length} 条证据供离线复核，但本次没有足够依据发布已验证结论。`,
+              citations: [],
+              status: 'context-only',
+            },
+          ],
     citations: [],
-    rejectedCitations: [],
+    rejectedCitations: options?.rejectedCitationDetails?.map((item) => item.citation) ?? [],
+    rejectedCitationDetails: options?.rejectedCitationDetails ?? [],
+    toolInvocations: options?.toolInvocations ?? input.toolContext,
     generatedAt: new Date().toISOString(),
     guardrailStatus: 'enforced',
-    fallbackReason: detail,
+    fallbackReason: safeDetail,
   };
+}
+
+function buildGroundedSummaryFromFindings(findings: ReasonerFinding[], input: ReasonerInput) {
+  const primaryFinding = findings.find((item) => item.status === 'verified');
+  if (primaryFinding) {
+    return primaryFinding.detail;
+  }
+
+  return `当前保留了 ${input.evidence.length} 条证据，但外部 reasoner 没有返回可直接发布的基于证据摘要。`;
 }
 
 export function filterEvidenceCitations(citations: string[], input: Pick<ReasonerInput, 'evidence'>) {
   return citations.filter((citation) => input.evidence.some((item) => item.id === citation));
+}
+
+function validateCitationsWithDetails(citations: string[], input: Pick<ReasonerInput, 'evidence'>): {
+  accepted: string[];
+  rejected: ReasonerRejectedCitation[];
+} {
+  const accepted: string[] = [];
+  const rejected: ReasonerRejectedCitation[] = [];
+
+  for (const citation of citations) {
+    if (input.evidence.some((item) => item.id === citation)) {
+      accepted.push(citation);
+      continue;
+    }
+    rejected.push({
+      citation,
+      reason: 'Citation does not map to the retained evidence bundle.',
+    });
+  }
+
+  return { accepted, rejected };
 }
 
 function buildExternalRequestBody(config: ExternalReasonerConfig, input: ReasonerInput) {
@@ -448,8 +587,9 @@ function buildExternalRequestBody(config: ExternalReasonerConfig, input: Reasone
           role: 'system',
           content: [
             '你是 Mini-Drop 的 evidence-only reasoner。',
-            '你只能根据给定 evidence id 输出结论，不能虚构热点、源码位置、指标或根因。',
-            '请始终返回 JSON 对象，格式为 {"summary": string, "findings": [{"title": string, "detail": string, "citations": string[]}], "citations": string[]}。',
+            '你只能根据给定 evidence id 和 availableTools 输出结论，不能虚构热点、源码位置、指标或根因。',
+            '你不能请求 availableTools 之外的工具。',
+            '请始终返回 JSON 对象，格式为 {"summary": string, "findings": [{"title": string, "detail": string, "citations": string[]}], "citations": string[], "toolCalls": [{"name": string, "args": object}] }。',
             'citations 里的值必须来自输入 evidence 的 id；如果证据不足，就明确说明，并返回空 citations。',
           ].join(' '),
         },
@@ -501,8 +641,87 @@ function extractOpenAIReasonerPayload(payload: unknown) {
       summary: content,
       findings: [],
       citations: [],
+      toolCalls: [],
     };
   }
+}
+
+function normalizeToolCalls(candidate: unknown): Array<{ name: string; args?: Record<string, unknown> }> {
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+
+  return candidate
+    .filter((item): item is { name?: unknown; args?: unknown } => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      name: typeof item.name === 'string' ? item.name : '',
+      args: item.args && typeof item.args === 'object' ? (item.args as Record<string, unknown>) : undefined,
+    }))
+    .filter((item) => item.name.length > 0);
+}
+
+function runToolCallOrReject(
+  input: ReasonerInput,
+  toolName: string,
+  args?: Record<string, unknown>,
+): ReasonerToolInvocation {
+  if (!isSupportedToolName(toolName)) {
+    const invocation: ReasonerToolInvocation = {
+      id: randomUUID(),
+      tool: 'validate_citations',
+      status: 'rejected',
+      requestSummary: `unsupported-tool=${toolName}`,
+      responseSummary: 'tool request rejected',
+      evidenceIds: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      error: `Unsupported tool request: ${toolName}`,
+    };
+    return invocation;
+  }
+
+  return runTool(toolName, input, args).invocation;
+}
+
+function runTool(
+  name: ReasonerToolName,
+  input: ReasonerInput,
+  args?: Record<string, unknown>,
+): { invocation: ReasonerToolInvocation; evidenceIds: string[] } {
+  const registry = getToolRegistryMap();
+  const tool = registry.get(name);
+  if (!tool) {
+    const invocation: ReasonerToolInvocation = {
+      id: randomUUID(),
+      tool: name,
+      status: 'rejected',
+      requestSummary: `tool=${name}`,
+      responseSummary: 'tool definition missing',
+      evidenceIds: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      error: 'Tool definition missing.',
+    };
+    return {
+      invocation,
+      evidenceIds: [],
+    };
+  }
+
+  const result = tool.invoke(input, args);
+  result.invocation.evidenceIds = result.evidenceIds;
+  return result;
+}
+
+function getToolRegistryMap() {
+  const registry = buildReasonerToolRegistry();
+  return new Map<ReasonerToolName, ReasonerToolRegistryEntry>(
+    registry.map((entry) => [entry.name, entry]),
+  );
+}
+
+function isSupportedToolName(value: string): value is ReasonerToolName {
+  return buildReasonerToolRegistry().some((entry) => entry.name === value);
 }
 
 function readExternalReasonerModelConfig(configPath: string): ExternalReasonerModelConfig | null {

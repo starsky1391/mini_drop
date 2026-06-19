@@ -1655,6 +1655,39 @@ h3 {
   gap: 14px;
 }
 
+.tool-trace-list,
+.rejected-citation-list {
+  display: grid;
+  gap: 10px;
+}
+
+.tool-trace-card,
+.rejected-citation-item {
+  display: grid;
+  gap: 6px;
+  border-radius: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.tool-trace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tool-trace-card p,
+.tool-trace-card small,
+.rejected-citation-item small {
+  color: var(--muted);
+}
+
+.rejected-citation-item span {
+  font-weight: 600;
+}
+
 .guardrail-list {
   display: grid;
   gap: 8px;

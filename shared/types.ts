@@ -13,6 +13,13 @@ export type CollectorProvenanceMode = 'real' | 'partial-real' | 'fallback';
 export type ArtifactPreviewMode = 'json' | 'text' | 'unsupported';
 export type ReasonerMode = 'disabled' | 'stub' | 'external';
 export type ReasonerGuardrailStatus = 'enforced';
+export type TaskReasonerToolName =
+  | 'get_task_evidence_bundle'
+  | 'get_baseline_context'
+  | 'get_artifact_excerpt'
+  | 'validate_citations';
+export type TaskReasonerToolStatus = 'completed' | 'failed' | 'rejected';
+export type TaskReasonerFindingStatus = 'verified' | 'context-only';
 export type CollectorReadinessStatus = 'preferred' | 'partial-real' | 'fallback-only' | 'deferred-for-linux-proof' | 'unavailable';
 export type SymbolizationMappingState = 'full' | 'file-only' | 'module-only' | 'synthetic' | 'unknown';
 export type SymbolizationMappingSource = 'retained' | 'derived-path' | 'derived-symbol' | 'fallback';
@@ -623,10 +630,34 @@ export interface TaskReasonerEvidenceItem {
   value?: number | string;
 }
 
+export interface TaskReasonerToolDefinition {
+  name: TaskReasonerToolName;
+  purpose: string;
+  readOnly: boolean;
+}
+
+export interface TaskReasonerRejectedCitation {
+  citation: string;
+  reason: string;
+}
+
+export interface TaskReasonerToolInvocation {
+  id: string;
+  tool: TaskReasonerToolName;
+  status: TaskReasonerToolStatus;
+  requestSummary: string;
+  responseSummary: string;
+  evidenceIds: string[];
+  startedAt: string;
+  finishedAt: string;
+  error: string | null;
+}
+
 export interface TaskReasonerFinding {
   title: string;
   detail: string;
   citations: string[];
+  status: TaskReasonerFindingStatus;
 }
 
 export interface TaskReasonerSnapshot {
@@ -639,6 +670,8 @@ export interface TaskReasonerSnapshot {
     scenario: string;
     evidence: TaskReasonerEvidenceItem[];
     guardrails: string[];
+    availableTools: TaskReasonerToolDefinition[];
+    toolContext: TaskReasonerToolInvocation[];
   };
   output: {
     mode: ReasonerMode;
@@ -646,6 +679,8 @@ export interface TaskReasonerSnapshot {
     findings: TaskReasonerFinding[];
     citations: string[];
     rejectedCitations: string[];
+    rejectedCitationDetails: TaskReasonerRejectedCitation[];
+    toolInvocations: TaskReasonerToolInvocation[];
     generatedAt: string;
     guardrailStatus: ReasonerGuardrailStatus;
     fallbackReason: string | null;

@@ -1,38 +1,41 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+shell commands, and other important information, read the current plan:
+`specs/004-tool-grounded-attribution/plan.md`
 <!-- SPECKIT END -->
 
-## Agent Context: Collector Maturity Alignment (002-collector-maturity)
+## Agent Context: Tool-Grounded Smart Attribution (004-tool-grounded-attribution)
 
-This round focuses on reducing collector maturity asymmetry and making deferred Linux proof explicit rather than pretending it is already complete.
+This round focuses on making Mini-Drop's reasoner tool-bounded and fully auditable so attribution conclusions stay verifiable.
 
-### Collector Maturity States
+### Core Goal
 
-| State | Label | Description |
-|-------|-------|-------------|
-| `preferred` | 首选真实链路 | 当前平台与依赖满足条件，可优先走真实采集路径 |
-| `partial-real` | 部分真实链路 | 可以保留部分真实采样证据，但存在平台、权限或解析层面的降级 |
-| `fallback-only` | 仅 fallback | 当前环境无法走首选真实链路，只能使用 managed workload 或 synthetic fallback |
-| `deferred-for-linux-proof` | Linux 现场证明延期 | 该采集器需要 Linux 环境才能完成真实链路现场证明，当前平台暂不具备条件 |
+- LLM 只能调用预先定义的只读工具
+- 每次归因都必须保留工具调用轨迹和引用校验结果
+- 结论必须能映射回保留证据或工具返回值
+- 不允许把未验证的断言当成确认根因
+- 继续保留 evidence-only guardrail 和外部 API 接入边界
 
-### Current Collector Maturity (Windows Host)
+### Scope Boundaries
 
-| Collector | Maturity | Readiness |
-|-----------|----------|-----------|
-| py-spy | stable | preferred |
-| async-profiler | partial | fallback-only (Windows) |
-| perf | deferred | deferred-for-linux-proof |
-| eBPF | deferred | deferred-for-linux-proof |
+- 仍然是单机单用户闭环
+- 不做远端控制面、多租户、自动服务发现
+- 不做自由形式工具调用或任意网络抓取
+- 不把模型输出伪装成已验证结论
+- 继续保持现有 compare/trend/history 能力
 
 ### Key Files
 
-- `shared/types.ts` - `CollectorReadinessStatus` includes `deferred-for-linux-proof`
-- `shared/catalog.ts` - Collector maturity annotations (`expectedMaturityOnCurrentHost`, `maturityNote`, `maturityNoteZh`)
-- `server/agent/probe.ts` - Platform-aware probe logic for perf/eBPF
-- `server/notes.ts` - `collectorMaturityMatrix` with platform-aware data
-- `src/App.tsx` - UI readiness cards with maturity notes
-- `specs/002-collector-maturity/quickstart.md` - Full maturity matrix and validation guide
+- `specs/004-tool-grounded-attribution/spec.md` - Feature scope and acceptance criteria
+- `specs/004-tool-grounded-attribution/plan.md` - Implementation plan and workstreams
+- `specs/004-tool-grounded-attribution/tasks.md` - Dependency-ordered execution tasks
+- `specs/004-tool-grounded-attribution/contracts/reasoner-tool-contract.md` - Tool registry and citation contract
+- `server/llm/index.ts` - Reasoner input shaping, tool restriction, citation filtering, and fallback behavior
+- `server/llm/types.ts` - Reasoner input/output and trace types
+- `server/services/task-service.ts` - Task snapshot assembly and reasoner sidecar loading
+- `shared/types.ts` - Shared task, evidence, and trace types
+- `src/App.tsx` - Reasoner trace and citation visibility
+- `src/ui-model.ts` - Detail-tab behavior for the attribution panel
 
 ### Validation
 
@@ -40,5 +43,7 @@ This round focuses on reducing collector maturity asymmetry and making deferred 
 npm run typecheck
 npm run test
 npm run build
-npm run validate:offline-agent
+npm run smoke:reasoner-tool-grounded
+npm run smoke:compare-trend
+npm run smoke:continuous-profile
 ```

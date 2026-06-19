@@ -1,0 +1,93 @@
+services:
+  mini-drop-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.ebpf-demo
+    privileged: true
+    pid: host
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+      - PERFMON
+      - BPF
+    security_opt:
+      - apparmor:unconfined
+      - seccomp:unconfined
+    environment:
+      MINI_DROP_BPFTRACE_BIN: bpftrace
+      MINI_DROP_AGENT_ID: "ebpf-demo-agent-1"
+      MINI_DROP_AGENT_LABEL: "ebpf-demo-agent"
+      MINI_DROP_AGENT_BASE_URL: "http://mini-drop-server:8787"
+      MINI_DROP_AGENT_POLL_MS: "1200"
+      MINI_DROP_AGENT_HEARTBEAT_MS: "4000"
+      MINI_DROP_REASONER_MODE: "${MINI_DROP_REASONER_MODE:-stub}"
+    volumes:
+      - mini-drop-data:/app/data
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+      - /sys/kernel/tracing:/sys/kernel/tracing:rw
+      - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
+
+  mini-drop-demo-target:
+    build:
+      context: ./demo/go-service
+      dockerfile: Dockerfile
+    ports:
+      - "18080:8080"
+    volumes:
+      - demo-target-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  demo-loadgen:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - mini-drop-demo-target
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        while true; do
+          curl -fsS "http://mini-drop-demo-target:8080/mixed?ms=$${DEMO_CPU_MS:-700}&mb=$${DEMO_IO_MB:-16}"
+          sleep "$${DEMO_SLEEP:-1}"
+        done
+    profiles:
+      - loadgen
+
+  io-jitter:
+    build:
+      context: .
+      dockerfile: Dockerfile.ebpf-demo
+    command:
+      [
+        "fio",
+        "--name=mini-drop-io",
+        "--filename=/tmp/mini-drop-io.dat",
+        "--rw=randread",
+        "--bs=4k",
+        "--iodepth=32",
+        "--numjobs=2",
+        "--size=1G",
+        "--runtime=60",
+        "--time_based",
+        "--direct=1"
+      ]
+    profiles:
+      - jitter
+
+  sched-jitter:
+    build:
+      context: .
+      dockerfile: Dockerfile.ebpf-demo
+    command: ["stress-ng", "--cpu", "4", "--cpu-method", "matrixprod", "--timeout", "60s"]
+    profiles:
+      - jitter
+
+volumes:
+  demo-target-data:

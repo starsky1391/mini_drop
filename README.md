@@ -44,7 +44,48 @@ node dist/server/server/agent/index.js
 
 - `Dockerfile` 和 `docker-compose.yml` 已提供 `mini-drop-server` + `mini-drop-agent` 双服务启动形态。
 - Linux 或容器环境可用 `scripts/bootstrap-demo.sh` 和 `scripts/docker-demo.sh` 做演示启动。
+- 评审推荐路径是 `docker compose up -d` 后执行 `make demo`，它会使用 `docker-compose.ebpf-demo.yml` 启动一个内置 Go demo target，并打印可在 Mini-Drop Web UI 中选择的真实 PID。
 - 当前仓库所在环境里已通过 `docker compose config` 校验 compose 配置；若 Docker daemon 未启动，则无法在本机完成 `docker compose up` 实跑。
+
+### Linux eBPF Demo
+
+在干净 Linux 机器上：
+
+```bash
+git clone https://github.com/starsky1391/mini_drop.git
+cd mini_drop
+docker compose up -d
+make demo
+```
+
+`make demo` 会启动：
+
+- `mini-drop-server`
+- `mini-drop-agent`，使用 eBPF demo 权限和 `bpftrace` 工具镜像
+- `mini-drop-demo-target`，仓库内置 Go HTTP 服务，带 CPU 和 IO 压力端点
+
+打开 `http://127.0.0.1:8787/`，使用 `make demo` 输出的 PID 创建任务：
+
+- Target type: `pid` 或 `process`
+- Language: `Go`
+- Collector: `eBPF`
+- Scenario: `cpu_hot`
+
+制造波动：
+
+```bash
+make demo-load
+make demo-io
+make demo-sched
+```
+
+硬件 / 内核 / 权限要求：
+
+- 推荐 Ubuntu 22.04+，Linux 5.8+；Linux 6.x 更稳。
+- 需要 Docker Engine 和 `docker compose` plugin。
+- 需要 GNU Make 或兼容 `make`。
+- `make demo` 的 eBPF agent 使用 privileged container、`pid: host`、`CAP_BPF`、`CAP_PERFMON`、`SYS_ADMIN`、`SYS_PTRACE`、unconfined AppArmor 和 unconfined seccomp。
+- 如果宿主机禁用 BPF、缺少 tracing/debugfs 挂载，或安全策略禁止 privileged container，eBPF 会降级并在任务详情中显示原因。
 
 ## Reasoner 配置
 
@@ -68,6 +109,7 @@ npm run validate:offline-agent
 npm run smoke:api
 npm run smoke:create-task
 npm run smoke:process-target
+npm run smoke:linux-real-process-attach
 $env:MINI_DROP_EXPECT_REASONER_FALLBACK='1'
 npm run smoke:compare-trend
 npm run smoke:continuous-profile
@@ -75,4 +117,25 @@ npm run smoke:continuous-profile
 
 如果 PowerShell 环境无法直接执行 `npm run ...`，同样可以把上面的命令替换成 `npm.cmd run ...`。
 
-更完整的验证矩阵、Linux 前置条件、采集器说明与 Agent 启动步骤见 [specs/002-collector-maturity/quickstart.md](/C:/1Project/project_web/drop/specs/002-collector-maturity/quickstart.md)。
+如果你要做 Linux 真实服务进程 attach proof，推荐先启动一个本机长生命周期服务，例如：
+
+```bash
+python3 -m http.server 8000 --bind 127.0.0.1
+```
+
+然后执行：
+
+```bash
+npm run smoke:linux-real-process-attach
+```
+
+可选环境变量：
+
+- `MINI_DROP_TARGET_PID`: 指定要 attach 的真实 PID
+- `MINI_DROP_TARGET_NAME`: 逻辑目标名，默认 `linux-real-process-smoke`
+- `MINI_DROP_TARGET_LANGUAGE`: 目标语言，默认 `Python`
+- `MINI_DROP_TARGET_COLLECTOR`: 采集器，默认 `py-spy`
+- `MINI_DROP_TARGET_SCENARIO`: 诊断场景，默认 `python_hot_loop`
+- `MINI_DROP_EXPECT_REAL_ATTACH=1`: 要求这次 proof 必须不是 fallback
+
+更完整的验证矩阵、Linux 前置条件、采集器说明与 Agent 启动步骤见 [specs/003-linux-real-process-attach/quickstart.md](/C:/1Project/project_web/drop/specs/003-linux-real-process-attach/quickstart.md) 和 [specs/002-collector-maturity/quickstart.md](/C:/1Project/project_web/drop/specs/002-collector-maturity/quickstart.md)。

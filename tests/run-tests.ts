@@ -1640,8 +1640,11 @@ test('buildReasonerSnapshot can read OpenAI-compatible model config files and no
     assert.equal(snapshot.output.summary, '热点集中在 parse_message，证据充分。');
     assert.deepEqual(snapshot.output.citations, ['hotspot-1', 'metric-cpu']);
     assert.deepEqual(snapshot.output.rejectedCitations, ['missing-citation']);
-    assert.equal(snapshot.output.findings.length, 1);
+    assert.equal(snapshot.output.findings.length, 2);
     assert.equal(snapshot.output.findings[0]?.citations[0], 'hotspot-1');
+    assert.equal(snapshot.output.findings[0]?.status, 'verified');
+    assert.deepEqual(snapshot.output.findings[1]?.citations, []);
+    assert.equal(snapshot.output.findings[1]?.status, 'context-only');
   } finally {
     globalThis.fetch = originalFetch;
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -1656,6 +1659,262 @@ test('buildReasonerSnapshot can read OpenAI-compatible model config files and no
       delete process.env.MINI_DROP_REASONER_CONFIG_PATH;
     } else {
       process.env.MINI_DROP_REASONER_CONFIG_PATH = previousConfigPath;
+    }
+
+    if (previousEndpoint === undefined) {
+      delete process.env.MINI_DROP_REASONER_ENDPOINT;
+    } else {
+      process.env.MINI_DROP_REASONER_ENDPOINT = previousEndpoint;
+    }
+
+    if (previousApiKey === undefined) {
+      delete process.env.MINI_DROP_REASONER_API_KEY;
+    } else {
+      process.env.MINI_DROP_REASONER_API_KEY = previousApiKey;
+    }
+
+    if (previousModel === undefined) {
+      delete process.env.MINI_DROP_REASONER_MODEL;
+    } else {
+      process.env.MINI_DROP_REASONER_MODEL = previousModel;
+    }
+  }
+});
+
+test('buildReasonerSnapshot rejects unsupported tool requests and keeps the rejection trace', async () => {
+  const previousMode = process.env.MINI_DROP_REASONER_MODE;
+  const previousEndpoint = process.env.MINI_DROP_REASONER_ENDPOINT;
+  const previousApiKey = process.env.MINI_DROP_REASONER_API_KEY;
+  const previousModel = process.env.MINI_DROP_REASONER_MODEL;
+  const originalFetch = globalThis.fetch;
+
+  process.env.MINI_DROP_REASONER_MODE = 'external';
+  process.env.MINI_DROP_REASONER_ENDPOINT = 'http://127.0.0.1:9001/v1/chat/completions';
+  process.env.MINI_DROP_REASONER_API_KEY = 'test-api-key';
+  process.env.MINI_DROP_REASONER_MODEL = 'mock-model';
+
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: '模型尝试请求额外工具。',
+                findings: [
+                  {
+                    title: '上下文观察',
+                    detail: '证据不足。',
+                    citations: [],
+                  },
+                ],
+                citations: [],
+                toolCalls: [
+                  {
+                    name: 'open_browser',
+                    args: { path: '/etc/passwd' },
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as typeof fetch;
+
+  try {
+    const task = createTaskDetail({
+      target: 'reasoner-unsupported-tool@local',
+      language: 'Python',
+      collector: 'py-spy',
+      scenario: 'python_hot_loop',
+    });
+
+    const snapshot = await buildReasonerSnapshot(task);
+    const rejectedTool = snapshot.output.toolInvocations.find((item) => item.status === 'rejected');
+
+    assert.equal(snapshot.output.mode, 'external');
+    assert.ok(rejectedTool);
+    assert.match(rejectedTool?.error ?? '', /Unsupported tool request/);
+    assert.match(snapshot.output.fallbackReason ?? '', /未声明工具请求/);
+    assert.equal(snapshot.output.citations.length, 0);
+    assert.ok(snapshot.output.findings.every((item) => item.status === 'context-only'));
+  } finally {
+    globalThis.fetch = originalFetch;
+
+    if (previousMode === undefined) {
+      delete process.env.MINI_DROP_REASONER_MODE;
+    } else {
+      process.env.MINI_DROP_REASONER_MODE = previousMode;
+    }
+
+    if (previousEndpoint === undefined) {
+      delete process.env.MINI_DROP_REASONER_ENDPOINT;
+    } else {
+      process.env.MINI_DROP_REASONER_ENDPOINT = previousEndpoint;
+    }
+
+    if (previousApiKey === undefined) {
+      delete process.env.MINI_DROP_REASONER_API_KEY;
+    } else {
+      process.env.MINI_DROP_REASONER_API_KEY = previousApiKey;
+    }
+
+    if (previousModel === undefined) {
+      delete process.env.MINI_DROP_REASONER_MODEL;
+    } else {
+      process.env.MINI_DROP_REASONER_MODEL = previousModel;
+    }
+  }
+});
+
+test('buildReasonerSnapshot safely degrades when all returned citations are stale', async () => {
+  const previousMode = process.env.MINI_DROP_REASONER_MODE;
+  const previousEndpoint = process.env.MINI_DROP_REASONER_ENDPOINT;
+  const previousApiKey = process.env.MINI_DROP_REASONER_API_KEY;
+  const previousModel = process.env.MINI_DROP_REASONER_MODEL;
+  const originalFetch = globalThis.fetch;
+
+  process.env.MINI_DROP_REASONER_MODE = 'external';
+  process.env.MINI_DROP_REASONER_ENDPOINT = 'http://127.0.0.1:9002/v1/chat/completions';
+  process.env.MINI_DROP_REASONER_API_KEY = 'test-api-key';
+  process.env.MINI_DROP_REASONER_MODEL = 'mock-model';
+
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: '热点在一个未保留的模块中。',
+                findings: [
+                  {
+                    title: '伪热点',
+                    detail: '这个结论引用了失效证据。',
+                    citations: ['missing-hotspot'],
+                  },
+                ],
+                citations: ['missing-hotspot'],
+              }),
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as typeof fetch;
+
+  try {
+    const task = createTaskDetail({
+      target: 'reasoner-stale-citation@local',
+      language: 'Python',
+      collector: 'py-spy',
+      scenario: 'python_hot_loop',
+    });
+
+    const snapshot = await buildReasonerSnapshot(task);
+    assert.equal(snapshot.output.mode, 'external');
+    assert.equal(snapshot.output.citations.length, 0);
+    assert.deepEqual(snapshot.output.rejectedCitations, ['missing-hotspot']);
+    assert.match(snapshot.output.fallbackReason ?? '', /无法映射回证据包/);
+    assert.ok(snapshot.output.findings.every((item) => item.status === 'context-only'));
+    assert.match(snapshot.output.summary, /不可验证或不完整/);
+  } finally {
+    globalThis.fetch = originalFetch;
+
+    if (previousMode === undefined) {
+      delete process.env.MINI_DROP_REASONER_MODE;
+    } else {
+      process.env.MINI_DROP_REASONER_MODE = previousMode;
+    }
+
+    if (previousEndpoint === undefined) {
+      delete process.env.MINI_DROP_REASONER_ENDPOINT;
+    } else {
+      process.env.MINI_DROP_REASONER_ENDPOINT = previousEndpoint;
+    }
+
+    if (previousApiKey === undefined) {
+      delete process.env.MINI_DROP_REASONER_API_KEY;
+    } else {
+      process.env.MINI_DROP_REASONER_API_KEY = previousApiKey;
+    }
+
+    if (previousModel === undefined) {
+      delete process.env.MINI_DROP_REASONER_MODEL;
+    } else {
+      process.env.MINI_DROP_REASONER_MODEL = previousModel;
+    }
+  }
+});
+
+test('buildReasonerSnapshot safely degrades when the external reasoner returns only sparse narrative', async () => {
+  const previousMode = process.env.MINI_DROP_REASONER_MODE;
+  const previousEndpoint = process.env.MINI_DROP_REASONER_ENDPOINT;
+  const previousApiKey = process.env.MINI_DROP_REASONER_API_KEY;
+  const previousModel = process.env.MINI_DROP_REASONER_MODEL;
+  const originalFetch = globalThis.fetch;
+
+  process.env.MINI_DROP_REASONER_MODE = 'external';
+  process.env.MINI_DROP_REASONER_ENDPOINT = 'http://127.0.0.1:9003/v1/chat/completions';
+  process.env.MINI_DROP_REASONER_API_KEY = 'test-api-key';
+  process.env.MINI_DROP_REASONER_MODEL = 'mock-model';
+
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: '',
+                findings: [
+                  {
+                    title: '直觉判断',
+                    detail: '看起来像是锁竞争，但没有引用支持。',
+                    citations: [],
+                  },
+                ],
+                citations: [],
+              }),
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as typeof fetch;
+
+  try {
+    const task = createTaskDetail({
+      target: 'reasoner-sparse-evidence@local',
+      language: 'Go',
+      collector: 'perf',
+      scenario: 'lock_contention',
+    });
+
+    const snapshot = await buildReasonerSnapshot(task);
+    assert.equal(snapshot.output.mode, 'external');
+    assert.equal(snapshot.output.citations.length, 0);
+    assert.match(snapshot.output.fallbackReason ?? '', /没有返回可验证的结论/);
+    assert.ok(snapshot.output.findings.every((item) => item.status === 'context-only'));
+    assert.match(snapshot.output.summary, /不可验证或不完整/);
+  } finally {
+    globalThis.fetch = originalFetch;
+
+    if (previousMode === undefined) {
+      delete process.env.MINI_DROP_REASONER_MODE;
+    } else {
+      process.env.MINI_DROP_REASONER_MODE = previousMode;
     }
 
     if (previousEndpoint === undefined) {

@@ -6,6 +6,8 @@ Date: 2026-06-16
 
 This round closed the Linux follow-up work for collector maturity alignment on an Ubuntu Server 24.04.4 LTS replay host.
 
+For the reusable VM access path, remote repo location, and default restart commands, also see [linux-test-environment.md](/C:/1Project/project_web/drop/docs/linux-test-environment.md).
+
 Validated focus areas:
 
 - real Linux `py-spy`

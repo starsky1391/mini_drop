@@ -141,6 +141,16 @@ type EvidenceCitation = {
   evidence: string;
 };
 
+type ToolTraceView = {
+  id: string;
+  tool: string;
+  status: string;
+  requestSummary: string;
+  responseSummary: string;
+  evidenceIds: string[];
+  error: string | null;
+};
+
 type ReasonerView =
   | {
       source: 'snapshot';
@@ -150,6 +160,8 @@ type ReasonerView =
       bullets: string[];
       citations: EvidenceCitation[];
       guardrails: string[];
+      toolTrace: ToolTraceView[];
+      rejectedCitationDetails: Array<{ citation: string; reason: string }>;
       generatedAt: string;
       rejectedCitations: string[];
       fallbackReason: string | null;
@@ -162,6 +174,8 @@ type ReasonerView =
       bullets: string[];
       citations: EvidenceCitation[];
       guardrails: string[];
+      toolTrace: ToolTraceView[];
+      rejectedCitationDetails: Array<{ citation: string; reason: string }>;
       generatedAt: string | null;
       rejectedCitations: string[];
       fallbackReason: string | null;
@@ -482,6 +496,40 @@ function evidenceSurfaceLabel(citationLabel: string) {
     return '趋势驱动';
   }
   return '证据包';
+}
+
+function toolStatusLabel(status: string) {
+  switch (status) {
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'rejected':
+      return '已拒绝';
+    default:
+      return status;
+  }
+}
+
+function toolStatusTone(status: string) {
+  switch (status) {
+    case 'completed':
+      return 'green';
+    case 'failed':
+      return 'rose';
+    case 'rejected':
+      return 'amber';
+    default:
+      return 'slate';
+  }
+}
+
+function findingStatusLabel(status: string | undefined) {
+  return status === 'verified' ? '已验证' : '上下文';
+}
+
+function findingStatusTone(status: string | undefined) {
+  return status === 'verified' ? 'green' : 'amber';
 }
 
 function pathTail(value: string) {
@@ -949,7 +997,10 @@ function buildReasonerView(
             : 'Reasoner 已禁用',
       bullets:
         snapshot.output.findings.length > 0
-          ? snapshot.output.findings.map((finding) => `${localizeLegacyText(finding.title)}: ${localizeLegacyText(finding.detail)}`)
+          ? snapshot.output.findings.map(
+              (finding) =>
+                `${localizeLegacyText(finding.title)} [${findingStatusLabel(finding.status)}]: ${localizeLegacyText(finding.detail)}`,
+            )
           : ['这次运行没有产出额外模型结论。'],
       citations:
         snapshot.output.citations.length > 0
@@ -959,6 +1010,19 @@ function buildReasonerView(
             }))
           : snapshot.input.evidence.slice(0, 4).map((item) => ({ label: item.label, evidence: localizeLegacyText(item.detail) })),
       guardrails: snapshot.input.guardrails.map((guardrail) => localizeLegacyText(guardrail)),
+      toolTrace: snapshot.output.toolInvocations.map((invocation) => ({
+        id: invocation.id,
+        tool: invocation.tool,
+        status: invocation.status,
+        requestSummary: localizeLegacyText(invocation.requestSummary),
+        responseSummary: localizeLegacyText(invocation.responseSummary),
+        evidenceIds: invocation.evidenceIds,
+        error: invocation.error ? localizeLegacyText(invocation.error) : null,
+      })),
+      rejectedCitationDetails: snapshot.output.rejectedCitationDetails.map((item) => ({
+        citation: item.citation,
+        reason: localizeLegacyText(item.reason),
+      })),
       generatedAt: snapshot.output.generatedAt,
       rejectedCitations: snapshot.output.rejectedCitations,
       fallbackReason: snapshot.output.fallbackReason ? localizeLegacyText(snapshot.output.fallbackReason) : null,
@@ -977,6 +1041,8 @@ function buildReasonerView(
     bullets: draft.bullets,
     citations: draft.citations,
     guardrails: ['当前正在等待持久化 reasoner snapshot 或真实模型响应。'],
+    toolTrace: [],
+    rejectedCitationDetails: [],
     generatedAt: null,
     rejectedCitations: [],
     fallbackReason: null,
@@ -2918,10 +2984,39 @@ function App() {
                         <small key={guardrail}>{guardrail}</small>
                       ))}
                     </div>
+                    {reasonerView.toolTrace.length > 0 ? (
+                      <div className="tool-trace-list">
+                        {reasonerView.toolTrace.map((trace) => (
+                          <article key={trace.id} className="tool-trace-card">
+                            <div className="tool-trace-head">
+                              <strong>{trace.tool}</strong>
+                              <span className={`tone tone-${toolStatusTone(trace.status)}`}>{toolStatusLabel(trace.status)}</span>
+                            </div>
+                            <p>{trace.responseSummary}</p>
+                            <small>请求: {trace.requestSummary}</small>
+                            {trace.evidenceIds.length > 0 ? <small>证据: {trace.evidenceIds.join(', ')}</small> : null}
+                            {trace.error ? <small>错误: {trace.error}</small> : null}
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
                     {reasonerView.rejectedCitations.length > 0 ? (
                       <div className="reasoner-note">
                         <strong>已过滤引用</strong>
                         <p>{reasonerView.rejectedCitations.join(', ')}</p>
+                      </div>
+                    ) : null}
+                    {reasonerView.rejectedCitationDetails.length > 0 ? (
+                      <div className="reasoner-note">
+                        <strong>引用拒绝原因</strong>
+                        <div className="rejected-citation-list">
+                          {reasonerView.rejectedCitationDetails.map((item) => (
+                            <div key={`${item.citation}-${item.reason}`} className="rejected-citation-item">
+                              <span>{item.citation}</span>
+                              <small>{item.reason}</small>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
                     {reasonerView.fallbackReason ? (

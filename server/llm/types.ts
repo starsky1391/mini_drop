@@ -6,7 +6,13 @@ import type {
   TaskDetail,
   TaskFinding,
   TaskMetrics,
+  TaskReasonerFindingStatus,
   TaskReasonerSnapshot,
+  TaskReasonerRejectedCitation,
+  TaskReasonerToolDefinition,
+  TaskReasonerToolInvocation,
+  TaskReasonerToolName,
+  TaskReasonerToolStatus,
   TaskTargetContext,
 } from '../../shared/types.js';
 
@@ -27,12 +33,20 @@ export interface ReasonerInput {
   scenario: string;
   evidence: ReasonerEvidenceItem[];
   guardrails: string[];
+  availableTools: ReasonerToolDefinition[];
+  toolContext: ReasonerToolInvocation[];
 }
 
 export interface ReasonerFinding {
   title: string;
   detail: string;
   citations: string[];
+  status: TaskReasonerFindingStatus;
+}
+
+export interface ReasonerRejectedCitation {
+  citation: string;
+  reason: string;
 }
 
 export interface ReasonerOutput {
@@ -41,6 +55,8 @@ export interface ReasonerOutput {
   findings: ReasonerFinding[];
   citations: string[];
   rejectedCitations: string[];
+  rejectedCitationDetails: TaskReasonerRejectedCitation[];
+  toolInvocations: ReasonerToolInvocation[];
   generatedAt: string;
   guardrailStatus: ReasonerGuardrailStatus;
   fallbackReason: string | null;
@@ -54,6 +70,27 @@ export interface ReasonerSnapshot extends TaskReasonerSnapshot {
 export interface ReasonerClient {
   mode: ReasonerMode;
   generate(input: ReasonerInput): Promise<ReasonerOutput>;
+}
+
+export interface ReasonerToolDefinition extends TaskReasonerToolDefinition {
+  name: TaskReasonerToolName;
+}
+
+export type ReasonerToolName = TaskReasonerToolName;
+export type ReasonerToolStatus = TaskReasonerToolStatus;
+
+export interface ReasonerToolInvocation extends TaskReasonerToolInvocation {
+  tool: TaskReasonerToolName;
+  status: TaskReasonerToolStatus;
+}
+
+export interface ReasonerToolResult {
+  invocation: ReasonerToolInvocation;
+  evidenceIds: string[];
+}
+
+export interface ReasonerToolRegistryEntry extends ReasonerToolDefinition {
+  invoke(input: ReasonerInput, args?: Record<string, unknown>): ReasonerToolResult;
 }
 
 export interface ExternalReasonerConfig {
