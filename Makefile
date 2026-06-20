@@ -4,7 +4,7 @@ COMPOSE ?= docker compose
 DEMO_COMPOSE := $(COMPOSE) -f docker-compose.yml -f docker-compose.ebpf-demo.yml
 DEMO_TARGET ?= mini-drop-demo-target
 
-.PHONY: demo demo-up demo-wait demo-pid demo-load demo-io demo-sched demo-smoke demo-down
+.PHONY: demo demo-up demo-wait demo-pid demo-load demo-load-stop demo-io demo-sched demo-smoke demo-down
 
 demo: demo-up demo-wait demo-pid
 
@@ -39,7 +39,12 @@ demo-pid:
 	echo "";
 
 demo-load:
-	$(DEMO_COMPOSE) --profile loadgen up demo-loadgen
+	@$(DEMO_COMPOSE) --profile loadgen rm -f -s demo-loadgen >/dev/null 2>&1 || true
+	$(DEMO_COMPOSE) --profile loadgen up -d --force-recreate demo-loadgen
+	@echo "demo-loadgen started in background. Use '$(MAKE) demo-load-stop' to stop it."
+
+demo-load-stop:
+	$(DEMO_COMPOSE) --profile loadgen stop demo-loadgen
 
 demo-io:
 	$(DEMO_COMPOSE) --profile jitter run --rm io-jitter
