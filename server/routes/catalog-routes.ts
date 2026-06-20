@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { collectorNotes } from '../notes.js';
-import { collectorRegistry } from '../collectors/index.js';
-import { probeAgentEnvironment } from '../agent/probe.js';
+import { loadCatalogCollectorReadiness } from '../services/task-service.js';
 import { collectors, scenarios, targetTypes } from '../../shared/catalog.js';
 import type { CatalogResponse, HealthResponse } from '../../shared/types.js';
 
@@ -19,12 +18,7 @@ export function createCatalogRouter() {
   });
 
   router.get('/catalog', async (_req, res) => {
-    const collectorReadiness = await Promise.all(
-      collectorRegistry.entries().map(async ([_, plugin]) => {
-        const probe = await probeAgentEnvironment(plugin);
-        return probe.collectors[0]!;
-      }),
-    );
+    const readiness = await loadCatalogCollectorReadiness();
 
     const payload: CatalogResponse = {
       collectors,
@@ -32,11 +26,15 @@ export function createCatalogRouter() {
       targetTypes,
       collectorNotes: [
         ...collectorNotes,
-        ...collectorReadiness.map(
+        ...readiness.notes,
+        ...readiness.collectorReadiness.map(
           (item) => `${item.collector}: readiness=${item.readiness} supported=${item.supported} available=${item.available}`,
         ),
       ],
-      collectorReadiness,
+      collectorReadiness: readiness.collectorReadiness,
+      collectorReadinessSource: readiness.source,
+      collectorReadinessAgentId: readiness.agentId,
+      collectorReadinessAgentLabel: readiness.agentLabel,
     };
     res.json(payload);
   });

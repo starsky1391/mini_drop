@@ -144,7 +144,7 @@ export const perfCollector: CollectorPlugin = {
       summary: parsedProfile?.usedRealData
         ? `${report.summary} Real perf stacks were parsed from ${parsedProfile.sampleCount} samples.`
         : collectionAssessment.mode === 'partial-real'
-          ? `${report.summary} perf retained raw native artifacts, but hotspot shaping still relies on fallback interpretation.`
+          ? `${report.summary} perf 已保留真实 native 采样产物，并完成了部分真实链路分析；当前热点排序仍带有降级塑形成分，建议结合 perf.data 与 script 产物复核。`
         : `${report.summary} Synthetic or workload-derived hotspots were used as a fallback.`,
     };
     const collapsedStacks =
@@ -315,7 +315,7 @@ export function assessPerfCollection(input: PerfCollectionAssessmentInput) {
       reason: `perf record completed${targetQualifier}, and perf.data was retained, but perf script did not emit stack frames that could be normalized.`,
       sourceKind: input.requestedPid ? 'external-perf-data' : 'perf-data',
       rawSignal: 'native-stack-sampling:perf-data:partial',
-      notes: ['perf.data and the retained script artifact remain available for audit, but hotspot shaping still fell back to workload-derived interpretation.'],
+      notes: ['perf.data 已真实保留，可用于离线复核；当前缺少可归一化栈帧，因此展示层只能输出 partial-real 热点摘要。'],
     };
   }
 
@@ -334,6 +334,6 @@ export function assessPerfCollection(input: PerfCollectionAssessmentInput) {
     reason: `perf commands completed${targetQualifier}, but the retained script output did not fully normalize into structured stack evidence.`,
     sourceKind: input.requestedPid ? 'external-perf-script' : input.parsedProfile?.evidence.sourceKind ?? 'perf-script',
     rawSignal: 'native-stack-sampling:perf-script:partial',
-    notes: ['Retained perf artifacts are real, but the post-processing path still depends on fallback hotspot shaping.'],
+    notes: ['retained perf artifacts are real and auditable, but the post-processing path only reached partial-real normalization.'],
   };
 }

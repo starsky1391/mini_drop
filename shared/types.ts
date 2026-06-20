@@ -575,6 +575,9 @@ export interface CatalogResponse {
   }[];
   collectorNotes: string[];
   collectorReadiness: CollectorRuntimeReadiness[];
+  collectorReadinessSource?: 'agent' | 'server-fallback';
+  collectorReadinessAgentId?: string | null;
+  collectorReadinessAgentLabel?: string | null;
 }
 
 export interface HealthResponse {

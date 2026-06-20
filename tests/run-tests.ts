@@ -41,6 +41,7 @@ import {
   acceptAgentHeartbeat,
   acceptAgentUploadResult,
   loadArtifactPreview,
+  loadCatalogCollectorReadiness,
   loadLocalProcesses,
   loadTaskContinuousProfile,
   loadTaskRunState,
@@ -476,6 +477,63 @@ test('probeAgentEnvironment reports Linux py-spy privilege context in readiness 
 
   assert.equal(probe.collectors[0]?.collector, 'py-spy');
   assert.match(probe.collectors[0]?.detail ?? '', /sudo=|ptrace|Linux 上会优先尝试真实 attach/);
+});
+
+test('loadCatalogCollectorReadiness prefers registered online agent collectors over server-local probes', async () => {
+  const agentId = `catalog-agent-${Date.now()}`;
+  await upsertAgent({
+    id: agentId,
+    label: 'catalog-agent',
+    status: 'online',
+    heartbeatState: 'healthy',
+    registeredAt: new Date().toISOString(),
+    lastHeartbeatAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+    staleAfterSeconds: 30,
+    platform: 'linux',
+    arch: 'x64',
+    nodeVersion: 'v22.0.0',
+    hostPid: 42,
+    currentTaskId: null,
+    notes: [],
+    collectors: [
+      {
+        collector: 'perf',
+        supported: true,
+        available: true,
+        readiness: 'preferred',
+        detail: 'agent-side perf probe passed',
+      },
+      {
+        collector: 'py-spy',
+        supported: true,
+        available: true,
+        readiness: 'preferred',
+        detail: 'agent-side py-spy probe passed',
+      },
+    ],
+  });
+
+  const readiness = await loadCatalogCollectorReadiness();
+  assert.equal(readiness.source, 'agent');
+  assert.equal(readiness.agentId, agentId);
+  assert.equal(readiness.collectorReadiness[0]?.collector, 'perf');
+  assert.match(readiness.notes[0] ?? '', /已注册 Agent/);
+});
+
+test('assessPerfCollection partial-real notes no longer classify retained real artifacts as pure fallback', () => {
+  const partial = assessPerfCollection({
+    platform: 'linux',
+    command: 'perf record -F 99',
+    commandError: null,
+    perfDataRecovered: false,
+    scriptOutputHadFrames: false,
+    parsedProfile: null,
+  });
+
+  assert.equal(partial.mode, 'partial-real');
+  assert.ok(partial.notes.every((note) => !/still depends on fallback hotspot shaping/i.test(note)));
+  assert.match(partial.notes[0] ?? '', /真实保留|partial-real|auditable/i);
 });
 
 test('assessAsyncProfilerCollection distinguishes real, partial-real, and fallback JVM capture paths', () => {

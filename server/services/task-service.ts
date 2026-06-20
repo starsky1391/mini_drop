@@ -283,6 +283,48 @@ export async function loadAgentList(): Promise<AgentListResponse> {
   };
 }
 
+export async function loadCatalogCollectorReadiness(): Promise<{
+  collectorReadiness: CollectorRuntimeReadiness[];
+  source: 'agent' | 'server-fallback';
+  agentId: string | null;
+  agentLabel: string | null;
+  notes: string[];
+}> {
+  const agents = (await listAgents()).map((agent) => refreshAgentHeartbeatState(agent));
+  const preferredAgent =
+    agents.find((agent) => isAgentAvailableForDispatch(agent) && agent.collectors.length > 0) ??
+    agents.find((agent) => agent.collectors.length > 0) ??
+    null;
+
+  if (preferredAgent) {
+    return {
+      collectorReadiness: preferredAgent.collectors,
+      source: 'agent',
+      agentId: preferredAgent.id,
+      agentLabel: preferredAgent.label,
+      notes: [
+        `collector readiness 来源于已注册 Agent：${preferredAgent.label} (${preferredAgent.id})`,
+        `agent status=${preferredAgent.status} heartbeat=${preferredAgent.heartbeatState}`,
+      ],
+    };
+  }
+
+  const collectorReadiness = await Promise.all(
+    collectorRegistry.entries().map(async ([_, plugin]) => {
+      const probe = await probeAgentEnvironment(plugin);
+      return probe.collectors[0]!;
+    }),
+  );
+
+  return {
+    collectorReadiness,
+    source: 'server-fallback',
+    agentId: null,
+    agentLabel: null,
+    notes: ['当前没有可用 Agent，collector readiness 已回退到 server 本机探测结果。'],
+  };
+}
+
 export async function registerAgent(body: unknown): Promise<ValidationResult<AgentRegistrationResponse>> {
   if (!body || typeof body !== 'object') {
     return {
