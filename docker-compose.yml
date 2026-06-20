@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8787:8787"
+      - "${MINI_DROP_HOST_PORT:-8787}:8787"
     environment:
       PORT: "8787"
       NODE_ENV: "production"

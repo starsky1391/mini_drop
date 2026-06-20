@@ -143,11 +143,100 @@ test('loadLocalProcesses returns local process metadata with pid and command sum
   assert.ok(response.collectedAt.length > 0);
   assert.ok(Array.isArray(response.processes));
   assert.ok(response.processes.length > 0);
+  assert.ok(response.source === 'server-local' || response.source === 'agent');
 
   const sampleProcess = response.processes.find((item) => item.pid === process.pid) ?? response.processes[0];
   assert.ok(sampleProcess);
   assert.ok(sampleProcess.pid > 0);
   assert.ok((sampleProcess.commandSummary ?? '').length > 0);
+});
+
+test('loadLocalProcesses prefers online agent process snapshots over server-local discovery', async () => {
+  const agentId = `process-agent-${Date.now()}`;
+  await upsertAgent({
+    id: agentId,
+    label: 'process-agent',
+    status: 'online',
+    heartbeatState: 'healthy',
+    registeredAt: new Date().toISOString(),
+    lastHeartbeatAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+    staleAfterSeconds: 30,
+    platform: 'linux',
+    arch: 'x64',
+    nodeVersion: process.version,
+    hostPid: 123,
+    currentTaskId: null,
+    notes: [],
+    collectors: [],
+    processSnapshot: {
+      collectedAt: new Date().toISOString(),
+      processes: [
+        {
+          pid: 43210,
+          name: 'node',
+          command: '/usr/local/bin/node server.js',
+          commandSummary: '/usr/local/bin/node server.js',
+          languageHint: 'Node.js',
+          alive: true,
+        },
+      ],
+    },
+  });
+
+  const response = await loadLocalProcesses();
+  assert.equal(response.source, 'agent');
+  assert.equal(response.agentId, agentId);
+  assert.equal(response.processes[0]?.pid, 43210);
+});
+
+test('validateTaskCreateInput accepts pid targets from agent-visible process snapshots', async () => {
+  const agentId = `validate-agent-${Date.now()}`;
+  await upsertAgent({
+    id: agentId,
+    label: 'validate-agent',
+    status: 'online',
+    heartbeatState: 'healthy',
+    registeredAt: new Date().toISOString(),
+    lastHeartbeatAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+    staleAfterSeconds: 30,
+    platform: 'linux',
+    arch: 'x64',
+    nodeVersion: process.version,
+    hostPid: 321,
+    currentTaskId: null,
+    notes: [],
+    collectors: [],
+    processSnapshot: {
+      collectedAt: new Date().toISOString(),
+      processes: [
+        {
+          pid: 54321,
+          name: 'wechat',
+          command: '/opt/wechat/wechat',
+          commandSummary: '/opt/wechat/wechat',
+          languageHint: null,
+          alive: true,
+        },
+      ],
+    },
+  });
+
+  const parsed = await validateTaskCreateInput({
+    targetType: 'pid',
+    pid: 54321,
+    language: 'C++',
+    collector: 'perf',
+    scenario: 'cpu_hot',
+  });
+
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) {
+    throw new Error(parsed.error.message);
+  }
+  assert.equal(parsed.value.pid, 54321);
+  assert.equal(parsed.value.processInfo?.name, 'wechat');
 });
 
 test('ui detail tabs hide reasoner until data exists and normalize invalid selections', () => {

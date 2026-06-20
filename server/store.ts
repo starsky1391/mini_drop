@@ -502,6 +502,20 @@ function normalizeAgent(raw: AgentSummary): AgentSummary {
     heartbeatState: normalizeHeartbeatState(raw.heartbeatState),
     notes: dedupeNotes(Array.isArray(raw.notes) ? raw.notes : []),
     collectors: Array.isArray(raw.collectors) ? raw.collectors : [],
+    processSnapshot:
+      raw.processSnapshot &&
+      typeof raw.processSnapshot === 'object' &&
+      Array.isArray(raw.processSnapshot.processes)
+        ? {
+            collectedAt:
+              typeof raw.processSnapshot.collectedAt === 'string'
+                ? raw.processSnapshot.collectedAt
+                : new Date().toISOString(),
+            processes: raw.processSnapshot.processes.map((item) => normalizeProcessInfo(item)).filter(
+              (item): item is TaskProcessInfo => Boolean(item),
+            ),
+          }
+        : null,
     lastOfflineAt: raw.lastOfflineAt,
     lastRecoveryAt: raw.lastRecoveryAt,
   };

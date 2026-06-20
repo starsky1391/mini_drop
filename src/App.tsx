@@ -1280,6 +1280,8 @@ function App() {
   const [artifactPreviewError, setArtifactPreviewError] = useState<string | null>(null);
   const [form, setForm] = useState<TaskCreateInput>(defaultForm);
   const [localProcesses, setLocalProcesses] = useState<ProcessListResponse['processes']>([]);
+  const [processSource, setProcessSource] = useState<ProcessListResponse['source'] | null>(null);
+  const [processSourceLabel, setProcessSourceLabel] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTabId>(() => {
     if (typeof window === 'undefined') {
       return 'compare';
@@ -1331,13 +1333,22 @@ function App() {
         ]);
         const nextCatalog = (await catalogRes.json()) as CatalogResponse;
         const nextTasks = (await tasksRes.json()) as TasksResponse;
-        const nextProcesses = processRes.ok ? ((await processRes.json()) as ProcessListResponse).processes : [];
+        const processPayload = processRes.ok ? ((await processRes.json()) as ProcessListResponse) : null;
+        const nextProcesses = processPayload?.processes ?? [];
         const nextAgents = agentRes.ok ? ((await agentRes.json()) as AgentsResponse).agents : [];
         const localizedTasks = nextTasks.tasks.map(localizeTaskForUi);
         if (ignore) return;
         setCatalog(nextCatalog);
         setAgents(nextAgents);
         setLocalProcesses(nextProcesses);
+        setProcessSource(processPayload?.source ?? null);
+        setProcessSourceLabel(
+          processPayload?.source === 'agent'
+            ? `当前显示 Agent 视角进程：${processPayload.agentLabel ?? processPayload.agentId ?? 'unknown-agent'}`
+            : processPayload?.source === 'server-local'
+              ? '当前显示 server 本机进程视角'
+              : null,
+        );
         setTasks(localizedTasks.sort((a, b) => statusOrder[b.status] - statusOrder[a.status] || Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
         setSelectedId((current) => current ?? localizedTasks[0]?.id ?? null);
         setBaselineId((current) => current ?? localizedTasks[1]?.id ?? localizedTasks[0]?.id ?? null);
@@ -1848,7 +1859,7 @@ function App() {
 
               {form.targetType === 'process' ? (
                 <label>
-                  本机进程
+                  {processSource === 'agent' ? 'Agent 可见进程' : '本机进程'}
                   <select
                     value={selectedProcessPid ?? ''}
                     onChange={(event) => {
@@ -1869,6 +1880,10 @@ function App() {
                       </option>
                     ))}
                   </select>
+                  <small className="field-hint">
+                    {processSourceLabel ??
+                      '当前没有 Agent 进程快照时，会回退为 server 本机进程视角。'}
+                  </small>
                 </label>
               ) : null}
 

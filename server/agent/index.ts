@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import type {
+  AgentProcessSnapshot,
   AgentHeartbeatRequest,
   AgentPollTaskResponse,
   AgentRegisterRequest,
@@ -14,6 +15,7 @@ import type {
 import { collectTaskExecution } from '../execution.js';
 import { getTask } from '../store.js';
 import { probeAllAgentCollectors } from './probe.js';
+import { listLocalProcesses } from '../process-discovery.js';
 
 export interface AgentRuntimeConfig {
   agentId: string;
@@ -100,6 +102,7 @@ export function createAgentApiClient(
 
 export async function registerAgentProcess(config: AgentRuntimeConfig, client: AgentApiClient) {
   const probe = await probeAllAgentCollectors();
+  const processSnapshot = await buildAgentProcessSnapshot();
   return client.register({
     id: config.agentId,
     label: config.label,
@@ -111,7 +114,16 @@ export async function registerAgentProcess(config: AgentRuntimeConfig, client: A
     },
     collectors: probe.collectors,
     notes: probe.notes,
+    processSnapshot,
   });
+}
+
+async function buildAgentProcessSnapshot(): Promise<AgentProcessSnapshot> {
+  const processes = await listLocalProcesses();
+  return {
+    collectedAt: processes.collectedAt,
+    processes: processes.processes,
+  };
 }
 
 export function taskDetailToCreateInput(task: TaskDetail): TaskCreateInput {
@@ -135,6 +147,7 @@ export async function executeLeasedTask(
   await client.heartbeat({
     currentTaskId: task.id,
     notes: [`Agent ${config.label} accepted task ${task.id}.`],
+    processSnapshot: await buildAgentProcessSnapshot(),
   });
 
   try {
@@ -156,6 +169,7 @@ export async function executeLeasedTask(
     await client.heartbeat({
       currentTaskId: null,
       notes: [`Agent ${config.label} finished task ${task.id} with ${uploadState}.`],
+      processSnapshot: await buildAgentProcessSnapshot(),
     });
     return finalizedTask;
   } catch (error) {
@@ -169,6 +183,7 @@ export async function executeLeasedTask(
     await client.heartbeat({
       currentTaskId: null,
       notes: [`Agent ${config.label} failed task ${task.id}: ${message}`],
+      processSnapshot: await buildAgentProcessSnapshot(),
     });
     throw error;
   }
@@ -180,6 +195,7 @@ export async function runAgentWorkCycle(config: AgentRuntimeConfig, client: Agen
     await client.heartbeat({
       currentTaskId: null,
       notes: [`Agent ${config.label} is idle and waiting for queued tasks.`],
+      processSnapshot: await buildAgentProcessSnapshot(),
     });
     return false;
   }
@@ -198,15 +214,8 @@ export async function runAgentLoop(
   let stopped = false;
   let currentTaskId: string | null = null;
   const heartbeatTimer = setInterval(() => {
-    void client
-      .heartbeat({
-        currentTaskId,
-        notes: [
-          currentTaskId
-            ? `Agent ${config.label} is currently working on ${currentTaskId}.`
-            : `Agent ${config.label} heartbeat ok.`,
-        ],
-      })
+    void buildHeartbeatPayload(config, currentTaskId)
+      .then((payload) => client.heartbeat(payload))
       .catch((error) => {
         console.error('[mini-drop-agent] heartbeat failed:', error instanceof Error ? error.message : String(error));
       });
@@ -249,6 +258,18 @@ export async function runAgentLoop(
 
   return {
     stop,
+  };
+}
+
+async function buildHeartbeatPayload(config: AgentRuntimeConfig, currentTaskId: string | null): Promise<AgentHeartbeatRequest> {
+  return {
+    currentTaskId,
+    notes: [
+      currentTaskId
+        ? `Agent ${config.label} is currently working on ${currentTaskId}.`
+        : `Agent ${config.label} heartbeat ok.`,
+    ],
+    processSnapshot: await buildAgentProcessSnapshot(),
   };
 }
 

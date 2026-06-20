@@ -34,6 +34,7 @@ import { probeAgentEnvironment } from '../agent/probe.js';
 import { buildArtifactPreviewMetadata, inferPreviewMode } from '../artifact-preview.js';
 import { isCollectorId, isScenarioId, isTaskTargetType } from '../../shared/catalog.js';
 import type {
+  AgentProcessSnapshot,
   AgentHeartbeatRequest,
   AgentListResponse,
   AgentPollTaskResponse,
@@ -148,16 +149,24 @@ export async function validateTaskCreateInput(body: unknown): Promise<Validation
     };
   }
 
+  const preferredAgent = await loadPreferredProcessAgent();
   let processInfo: TaskProcessInfo | null = null;
   if (targetType !== 'label' && pid) {
-    processInfo = await getProcessByPid(pid);
+    processInfo = resolveProcessFromSnapshot(preferredAgent?.processSnapshot ?? null, pid);
+    if (!processInfo) {
+      processInfo = await getProcessByPid(pid);
+    }
     if (!processInfo) {
       return {
         ok: false,
         error: {
           code: 'target_process_not_found',
           message: `No running process matched PID ${pid}.`,
-          details: [`The selected target process must still exist when the task is created.`],
+          details: [
+            preferredAgent
+              ? `PID 校验已优先使用 Agent ${preferredAgent.label} (${preferredAgent.id}) 的真实进程快照。`
+              : 'The selected target process must still exist when the task is created.',
+          ],
         },
       };
     }
@@ -275,7 +284,24 @@ export async function createTaskAndDispatch(input: TaskCreateInput): Promise<Tas
 }
 
 export async function loadLocalProcesses(): Promise<ProcessListResponse> {
-  return listLocalProcesses();
+  const preferredAgent = await loadPreferredProcessAgent();
+  if (preferredAgent?.processSnapshot?.processes.length) {
+    return {
+      collectedAt: preferredAgent.processSnapshot.collectedAt,
+      processes: preferredAgent.processSnapshot.processes,
+      source: 'agent',
+      agentId: preferredAgent.id,
+      agentLabel: preferredAgent.label,
+    };
+  }
+
+  const local = await listLocalProcesses();
+  return {
+    ...local,
+    source: 'server-local',
+    agentId: null,
+    agentLabel: null,
+  };
 }
 
 export async function loadAgentList(): Promise<AgentListResponse> {
@@ -366,6 +392,7 @@ export async function registerAgent(body: unknown): Promise<ValidationResult<Age
     currentTaskId: existing?.currentTaskId ?? null,
     notes: normalizeNotes(candidate.notes),
     collectors,
+    processSnapshot: normalizeProcessSnapshot(candidate.processSnapshot),
     lastOfflineAt: existing?.lastOfflineAt,
     lastRecoveryAt: existing?.status === 'offline' ? now : existing?.lastRecoveryAt,
   };
@@ -434,6 +461,7 @@ export async function acceptAgentHeartbeat(
     currentTaskId: typeof candidate.currentTaskId === 'string' ? candidate.currentTaskId : null,
     collectors: normalizeHeartbeatCollectors(candidate.collectors ?? existing.collectors),
     notes: normalizeNotes(candidate.notes?.length ? candidate.notes : existing.notes),
+    processSnapshot: normalizeProcessSnapshot(candidate.processSnapshot) ?? existing.processSnapshot ?? null,
     lastRecoveryAt: recovered ? now : existing.lastRecoveryAt,
   };
 
@@ -968,6 +996,42 @@ function normalizeRequestedProcessInfo(value: unknown): TaskProcessInfo | null {
     languageHint: languageHint || null,
     alive: true,
   };
+}
+
+function normalizeProcessSnapshot(value: unknown): AgentProcessSnapshot | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as Partial<AgentProcessSnapshot>;
+  const processes = Array.isArray(candidate.processes)
+    ? candidate.processes.map((item) => normalizeRequestedProcessInfo(item)).filter((item): item is TaskProcessInfo => Boolean(item))
+    : [];
+
+  return {
+    collectedAt: typeof candidate.collectedAt === 'string' ? candidate.collectedAt : new Date().toISOString(),
+    processes,
+  };
+}
+
+function resolveProcessFromSnapshot(snapshot: AgentProcessSnapshot | null, pid: number) {
+  if (!snapshot) {
+    return null;
+  }
+  return snapshot.processes.find((item) => item.pid === pid) ?? null;
+}
+
+async function loadPreferredProcessAgent(): Promise<AgentSummary | null> {
+  const agents = (await listAgents()).map((agent) => refreshAgentHeartbeatState(agent));
+  return (
+    agents.find(
+      (agent) =>
+        isAgentAvailableForDispatch(agent) &&
+        Boolean(agent.processSnapshot?.processes.length),
+    ) ??
+    agents.find((agent) => Boolean(agent.processSnapshot?.processes.length)) ??
+    null
+  );
 }
 
 function defaultAttachSource(targetType: TaskTargetType): TaskAttachSource {

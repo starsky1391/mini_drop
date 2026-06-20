@@ -13,6 +13,13 @@ docker compose up -d
 make demo
 ```
 
+If host port `8787` is unavailable, override only the host-side mapping and keep the container internal port unchanged:
+
+```bash
+MINI_DROP_HOST_PORT=18787 docker compose up -d
+MINI_DROP_HOST_PORT=18787 make demo
+```
+
 The built-in target is `mini-drop-demo-target`, a small Go HTTP service with CPU and IO endpoints. It is intentionally included in this repository so the reviewer does not need to clone or trust a second project.
 
 ## Requirements
@@ -38,7 +45,7 @@ make demo
 Open:
 
 ```text
-http://127.0.0.1:8787/
+http://127.0.0.1:<MINI_DROP_HOST_PORT or 8787>/
 ```
 
 Create a Mini-Drop task:

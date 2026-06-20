@@ -152,6 +152,11 @@ export interface TaskProcessInfo {
   alive?: boolean;
 }
 
+export interface AgentProcessSnapshot {
+  collectedAt: string;
+  processes: TaskProcessInfo[];
+}
+
 export interface TaskTargetContext {
   targetType: TaskTargetType;
   attachSource: TaskAttachSource;
@@ -221,6 +226,7 @@ export interface AgentSummary {
   currentTaskId: string | null;
   notes: string[];
   collectors: CollectorRuntimeReadiness[];
+  processSnapshot?: AgentProcessSnapshot | null;
   lastOfflineAt?: string;
   lastRecoveryAt?: string;
 }
@@ -563,6 +569,9 @@ export interface TaskListFilters {
 export interface ProcessListResponse {
   collectedAt: string;
   processes: TaskProcessInfo[];
+  source?: 'agent' | 'server-local';
+  agentId?: string | null;
+  agentLabel?: string | null;
 }
 
 export interface CatalogResponse {
@@ -742,12 +751,14 @@ export interface AgentRegisterRequest {
   };
   collectors?: CollectorRuntimeReadiness[];
   notes?: string[];
+  processSnapshot?: AgentProcessSnapshot | null;
 }
 
 export interface AgentHeartbeatRequest {
   currentTaskId?: string | null;
   collectors?: CollectorRuntimeReadiness[];
   notes?: string[];
+  processSnapshot?: AgentProcessSnapshot | null;
 }
 
 export interface AgentRegistrationResponse {

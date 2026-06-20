@@ -3,6 +3,7 @@ SHELL := /bin/sh
 COMPOSE ?= docker compose
 DEMO_COMPOSE := $(COMPOSE) -f docker-compose.yml -f docker-compose.ebpf-demo.yml
 DEMO_TARGET ?= mini-drop-demo-target
+MINI_DROP_HOST_PORT ?= 8787
 
 .PHONY: demo demo-up demo-wait demo-pid demo-load demo-load-stop demo-io demo-sched demo-smoke demo-down
 
@@ -12,7 +13,7 @@ demo-up:
 	$(DEMO_COMPOSE) up --build -d mini-drop-server mini-drop-agent $(DEMO_TARGET)
 
 demo-wait:
-	@i=0; until curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1; do \
+	@i=0; until curl -fsS http://127.0.0.1:$(MINI_DROP_HOST_PORT)/api/health >/dev/null 2>&1; do \
 		i=$$((i + 1)); \
 		if [ "$$i" -ge 60 ]; then echo "Mini-Drop did not become healthy"; exit 1; fi; \
 		sleep 2; \
@@ -28,7 +29,7 @@ demo-pid:
 	if [ -z "$$container" ]; then echo "demo target container is not running"; exit 1; fi; \
 	pid="$$(docker inspect -f '{{.State.Pid}}' "$$container")"; \
 	echo ""; \
-	echo "Mini-Drop UI: http://127.0.0.1:8787/"; \
+	echo "Mini-Drop UI: http://127.0.0.1:$(MINI_DROP_HOST_PORT)/"; \
 	echo "Demo target: http://127.0.0.1:18080/health"; \
 	echo "Use this PID in Mini-Drop: $$pid"; \
 	echo "Recommended task: targetType=pid/process, language=Go, collector=eBPF, scenario=cpu_hot"; \

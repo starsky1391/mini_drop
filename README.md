@@ -19,7 +19,14 @@ npm run build
 npm start
 ```
 
-默认 UI 地址是 `http://127.0.0.1:8787/`。
+默认 UI 地址是 `http://127.0.0.1:8787/`。如果宿主机上的 `8787` 被占用或被系统保留，可以只改宿主机映射端口，不改容器内端口：
+
+```powershell
+$env:MINI_DROP_HOST_PORT='18787'
+docker compose up -d
+```
+
+随后访问 `http://127.0.0.1:18787/`。
 
 如果当前 PowerShell 因执行策略拦截了 `npm.ps1`，可以直接改用 `npm.cmd`：
 
@@ -64,7 +71,7 @@ make demo
 - `mini-drop-agent`，使用 eBPF demo 权限和 `bpftrace` 工具镜像
 - `mini-drop-demo-target`，仓库内置 Go HTTP 服务，带 CPU 和 IO 压力端点
 
-打开 `http://127.0.0.1:8787/`，使用 `make demo` 输出的 PID 创建任务：
+默认打开 `http://127.0.0.1:8787/`。如果设置了 `MINI_DROP_HOST_PORT`，就改为访问对应端口，例如 `http://127.0.0.1:18787/`。然后使用 `make demo` 输出的 PID 创建任务：
 
 - Target type: `pid` 或 `process`
 - Language: `Go`
