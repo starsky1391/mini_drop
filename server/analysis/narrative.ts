@@ -22,6 +22,7 @@ export function buildAnalysisNarrative(context: AnalysisContext): AnalysisNarrat
   const hotspotMovement = context.comparison ? describeHotspotMovementFromComparison(context.task, context.comparison) : null;
   const trendDriver = context.comparison ? deriveTrendDriver(context.comparison) : null;
   const symbolization = summarizeSymbolization(context.run.hotspots);
+  const evidenceStatus = summarizeEvidenceStatus(context);
 
   return {
     confidence: computeConfidence(context.run.metrics, dominant.percent, context.run.sampleCount, dominant.frame.mappingState),
@@ -29,7 +30,7 @@ export function buildAnalysisNarrative(context: AnalysisContext): AnalysisNarrat
     analysisSummary: buildAnalysisSummary(context, dominant),
     trendSummary: buildTrendSummary(context.comparison, hotspotMovement, trendDriver),
     timeline: buildTimeline(context, hotspotMovement),
-    findings: buildFindings(context, dominant, hotspotMovement, trendDriver),
+    findings: buildFindings(context, dominant, hotspotMovement, trendDriver, evidenceStatus),
     insights: buildInsights(context, dominant, hotspotMovement, trendDriver),
     flameGraph: buildFlameGraph(context.run.title, context.run.topStacks, context.run.hotspots),
     trendDriver,
@@ -74,6 +75,7 @@ function buildFindings(
   dominant: NormalizedHotspot,
   hotspotMovement: string | null,
   trendDriver: AnalysisNarrative['trendDriver'],
+  evidenceStatus: ReturnType<typeof summarizeEvidenceStatus>,
 ) {
   const findings: TaskFinding[] = [];
 
@@ -102,11 +104,13 @@ function buildFindings(
   }
 
   findings.push({
-    title: context.run.usedRealData ? '采集器输出保留了结构化栈证据' : '采集器输出回退到了 synthetic 热点证据',
+    title: evidenceStatus.title,
     severity: context.outcome.logs.length > 0 ? 'medium' : 'info',
-    evidence: context.run.usedRealData
+    evidence: evidenceStatus.kind === 'real'
       ? `共保留了 ${context.run.hotspots.length} 个排序热点，来自 ${context.run.stackCount} 种唯一栈形态${context.run.threadCount > 0 ? `，覆盖 ${context.run.threadCount} 个线程` : ''}。`
-      : `当前通过 fallback 路径保留了 ${context.run.hotspots.length} 个排序热点，同时记录了 CPU ${context.run.metrics.cpu}%、blocked ${context.run.metrics.blocked}%、GC ${context.run.metrics.gc}% 等指标。`,
+      : evidenceStatus.kind === 'partial-real'
+        ? `当前已保留真实 perf 产物，并从中提炼了部分可读热点或样本线索；当前展示仍带有降级成分。当前指标为 CPU ${context.run.metrics.cpu}%、blocked ${context.run.metrics.blocked}%、GC ${context.run.metrics.gc}% 等。`
+        : `当前通过 fallback 路径保留了 ${context.run.hotspots.length} 个排序热点，同时记录了 CPU ${context.run.metrics.cpu}%、blocked ${context.run.metrics.blocked}%、GC ${context.run.metrics.gc}% 等指标。`,
     recommendation: `建议把这次由 ${context.task.collectorName} 生成的产物作为后续对比的参考运行。`,
   });
 
@@ -168,11 +172,27 @@ function buildAnalysisSummary(context: AnalysisContext, dominant: NormalizedHots
   const secondary = context.run.hotspots[1];
   const source = formatFrameLocation(dominant.frame);
   const secondaryText = secondary ? ` 次级压力位于 ${secondary.name}，占比 ${secondary.percent}%。` : '';
-  const realSourceText = context.run.usedRealData
-    ? ` 标准化阶段保留了 ${context.run.stackCount} 种栈形态${context.run.threadCount > 0 ? `，覆盖 ${context.run.threadCount} 个线程` : ''}。`
-    : ' 当前报告仍然依赖 fallback 热点证据。';
+  const evidenceStatus = summarizeEvidenceStatus(context);
+  const realSourceText =
+    evidenceStatus.kind === 'real'
+      ? ` 标准化阶段保留了 ${context.run.stackCount} 种栈形态${context.run.threadCount > 0 ? `，覆盖 ${context.run.threadCount} 个线程` : ''}。`
+      : evidenceStatus.kind === 'partial-real'
+        ? ' 当前报告保留了部分真实栈证据，但热点排序与指标解释仍包含降级成分。'
+        : ' 当前报告仍然依赖 fallback 热点证据。';
   const symbolization = summarizeSymbolization(context.run.hotspots);
   return `${context.run.title} 从 ${context.run.sampleSource} 保留了 ${context.run.sampleCount} 个样本。${context.run.summary}${realSourceText} ${symbolization.summary} 当前主热点是 ${dominant.name}，位置在 ${source}.${secondaryText}`;
+}
+
+function summarizeEvidenceStatus(context: AnalysisContext) {
+  if (context.run.usedRealData) {
+    return { kind: 'real' as const, title: '采集器输出保留了结构化栈证据' };
+  }
+
+  if (context.outcome.sample.rawSignal.includes(':partial')) {
+    return { kind: 'partial-real' as const, title: '采集器输出保留了部分真实栈证据' };
+  }
+
+  return { kind: 'fallback' as const, title: '采集器输出回退到了 synthetic 热点证据' };
 }
 
 function buildTrendSummary(

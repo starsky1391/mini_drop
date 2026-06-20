@@ -10,7 +10,7 @@ import { compareTasks } from '../server/comparison.js';
 import { buildCollectionPathSummary } from '../server/collectors/collection-path.js';
 import { assessAsyncProfilerCollection } from '../server/collectors/async-profiler.js';
 import { assessEbpfCollection } from '../server/collectors/ebpf.js';
-import { assessPerfCollection } from '../server/collectors/perf.js';
+import { assessPerfCollection, buildEvidenceBackedPerfReport } from '../server/collectors/perf.js';
 import {
   parseBpftraceSnapshot,
   parseCollapsedStacks,
@@ -234,6 +234,23 @@ python3 1234/1234 [002] 1000.002: 21 cpu-clock:
   assert.equal(parsed.topFunctions[0]?.name, 'parse_message');
   assert.ok(parsed.evidence.hotspots[0]?.representativeStack.length >= 2);
   assert.match(parsed.collapsedStacks, /frame_eval/);
+});
+
+test('parsePerfScript retains address-backed frames when symbols are unresolved', () => {
+  const parsed = parsePerfScript(`
+mini-drop-demo-target 19 [001] 1000.001: 11 cycles:
+        7f1234567890 [unknown] (/tmp/perf-19.map)
+        7f1234567000 [unknown] (/usr/local/bin/demo-target)
+
+mini-drop-demo-target 19 [001] 1000.002: 7 cycles:
+        7f1234567890 [unknown] (/tmp/perf-19.map)
+        7f1234567000 [unknown] (/usr/local/bin/demo-target)
+`);
+
+  assert.ok(parsed);
+  assert.equal(parsed?.usedRealData, true);
+  assert.ok((parsed?.topFunctions[0]?.name ?? '').includes('@0x'));
+  assert.equal(parsed?.evidence.hotspots.length ? true : false, true);
 });
 
 test('parseSpeedscopeProfile preserves file and line evidence', () => {
@@ -534,6 +551,49 @@ test('assessPerfCollection partial-real notes no longer classify retained real a
   assert.equal(partial.mode, 'partial-real');
   assert.ok(partial.notes.every((note) => !/still depends on fallback hotspot shaping/i.test(note)));
   assert.match(partial.notes[0] ?? '', /真实保留|partial-real|auditable/i);
+});
+
+test('buildEvidenceBackedPerfReport prefers parsed attach evidence over synthetic fallback metrics', () => {
+  const report = buildEvidenceBackedPerfReport({
+    target: 'demo-target',
+    durationSeconds: 8,
+    processLabel: 'mini-drop-demo-target',
+    collectionAssessment: assessPerfCollection({
+      platform: 'linux',
+      command: 'perf record -F 99',
+      commandError: null,
+      perfDataRecovered: false,
+      scriptOutputHadFrames: true,
+      parsedProfile: {
+        usedRealData: true,
+        sampleCount: 42,
+        evidence: { sourceKind: 'perf-script' },
+      } as never,
+    }),
+    parsedProfile: {
+      sampleCount: 42,
+      usedRealData: true,
+      collapsedStacks: 'demo;write 20',
+      topFunctions: [
+        { name: 'main.handleMixed', percent: 58, module: '/usr/local/bin/demo-target' },
+        { name: 'runtime.futex', percent: 11, module: '[kernel.kallsyms]' },
+      ],
+      evidence: {
+        sourceKind: 'perf-script',
+        usedRealData: true,
+        sampleCount: 42,
+        stackCount: 2,
+        threadCount: 1,
+        topStacks: [],
+        hotspots: [],
+        collapsedStacks: 'demo;write 20',
+      },
+    },
+  });
+
+  assert.equal(report.top_functions[0]?.name, 'main.handleMixed');
+  assert.notEqual(report.metrics.cpu, 91);
+  assert.match(report.summary, /真实 perf 栈|部分真实 perf 产物/);
 });
 
 test('assessAsyncProfilerCollection distinguishes real, partial-real, and fallback JVM capture paths', () => {

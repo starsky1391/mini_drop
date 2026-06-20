@@ -346,7 +346,7 @@ function parsePerfFrame(line: string): ParsedFrame | null {
 
   const source = extractSourceLocation(withoutAddress);
   const symbolArea = source ? withoutAddress.slice(0, source.index).trim() : withoutAddress;
-  const symbol = sanitizeSymbol(symbolArea);
+  const symbol = sanitizeSymbol(symbolArea) ?? synthesizeAddressBackedSymbol(symbolArea, address, moduleName);
   if (!symbol) {
     return null;
   }
@@ -369,6 +369,21 @@ function parsePerfFrame(line: string): ParsedFrame | null {
     mappingSource: source?.path ? 'retained' : moduleName.includes('/') || moduleName.includes('\\') ? 'derived-path' : 'fallback',
     address,
   };
+}
+
+function synthesizeAddressBackedSymbol(symbolArea: string, address: string | null, moduleName: string) {
+  const trimmed = symbolArea.trim();
+  if (trimmed && trimmed !== '-' && trimmed !== '[unknown]' && trimmed.toLowerCase() !== 'unknown') {
+    return trimmed.replace(/\s+/g, '_');
+  }
+
+  if (address) {
+    const suffix = address.replace(/^0x/i, '').slice(-8);
+    return `${basenameOrSelf(moduleName)}@0x${suffix}`;
+  }
+
+  const normalizedModule = basenameOrSelf(moduleName);
+  return normalizedModule ? `${normalizedModule}@unknown` : null;
 }
 
 function parseCollapsedFrame(token: string): ParsedFrame | null {

@@ -9,6 +9,7 @@ import type { ParsedProfileSummary } from './profile-utils.js';
 import { createCollectorSession } from './session.js';
 import { persistCollectionPathDecision } from './collection-path.js';
 import { probeLinuxPrivilegeSupport, runLinuxCollectorCommand } from './linux-privileged.js';
+import type { TaskMetrics } from '../../shared/types.js';
 
 export const perfCollector: CollectorPlugin = {
   capability: {
@@ -130,14 +131,33 @@ export const perfCollector: CollectorPlugin = {
       requestedPid: profile.requestedPid,
       usedManagedFallback: !shouldTryExternalAttach,
     });
+    const preferEvidenceBackedAttachReport =
+      shouldTryExternalAttach && (collectionAssessment.mode === 'real' || collectionAssessment.mode === 'partial-real');
     const fallbackWorkload =
-      collectionAssessment.mode === 'real' && !shouldTryExternalAttach ? workload : collectionAssessment.mode === 'real' ? null : await ensureManagedFallbackWorkload();
+      preferEvidenceBackedAttachReport || collectionAssessment.mode === 'real'
+        ? !shouldTryExternalAttach && collectionAssessment.mode === 'real'
+          ? workload
+          : null
+        : await ensureManagedFallbackWorkload();
     const [completion, workloadStdout, workloadStderr] = fallbackWorkload
       ? await Promise.all([fallbackWorkload.completion, fallbackWorkload.stdout, fallbackWorkload.stderr])
       : [{ code: 0, signal: null, report: null }, '', ''];
     const fallbackReport = completion.report ?? (fallbackWorkload ? await readWorkloadReport(reportFile) : null);
-    const report = fallbackReport ?? buildSyntheticReport(context.collector, context.target, scenario.name, scenario.topFunctions[0].name, durationSeconds);
-    const topFunctions = mergeHotspots(parsedProfile?.topFunctions ?? [], report.top_functions, 4);
+    const report =
+      fallbackReport ??
+      (preferEvidenceBackedAttachReport
+        ? buildEvidenceBackedPerfReport({
+            target: context.target,
+            durationSeconds,
+            parsedProfile,
+            processLabel: profile.processInfo?.name ?? profile.targetCommand ?? context.target,
+            collectionAssessment,
+          })
+        : buildSyntheticReport(context.collector, context.target, scenario.name, scenario.topFunctions[0].name, durationSeconds));
+    const topFunctions =
+      preferEvidenceBackedAttachReport && parsedProfile?.topFunctions?.length
+        ? parsedProfile.topFunctions.slice(0, 4)
+        : mergeHotspots(parsedProfile?.topFunctions ?? [], report.top_functions, 4);
     const collectorReport = {
       ...report,
       top_functions: topFunctions,
@@ -262,6 +282,61 @@ function scenarioMetrics(title: string) {
     return { cpu: 72, blocked: 7, gc: 5, syscalls: 6 };
   }
   return { cpu: 91, blocked: 4, gc: 2, syscalls: 3 };
+}
+
+export function buildEvidenceBackedPerfReport(input: {
+  target: string;
+  durationSeconds: number;
+  parsedProfile: ParsedProfileSummary | null;
+  processLabel: string;
+  collectionAssessment: ReturnType<typeof assessPerfCollection>;
+}) {
+  const topFunctions = input.parsedProfile?.topFunctions?.slice(0, 4) ?? [];
+  const metrics = inferPerfMetricsFromHotspots(topFunctions, input.parsedProfile?.sampleCount ?? 0);
+  const sourceLabel = input.parsedProfile?.usedRealData ? '真实 perf 栈' : '部分真实 perf 产物';
+  return {
+    scenario: 'cpu_hot' as const,
+    collector: 'perf' as const,
+    target: input.target,
+    title: `${input.processLabel} perf Attach`,
+    duration_ms: input.durationSeconds * 1000,
+    result: 1,
+    metrics,
+    top_functions:
+      topFunctions.length > 0
+        ? topFunctions
+        : [{ name: 'unparsed_perf_stack', percent: 100, module: 'perf/partial-real' }],
+    summary: `${sourceLabel}已保留。${input.collectionAssessment.reason}`,
+  };
+}
+
+function inferPerfMetricsFromHotspots(topFunctions: Array<{ name: string; percent: number; module: string }>, sampleCount: number): TaskMetrics {
+  const dominant = topFunctions[0]?.percent ?? 0;
+  const cpu = clampMetric(35 + dominant + Math.min(25, Math.round(sampleCount / 8)), 18, 99);
+  const blocked = weightedMatch(topFunctions, /(mutex|lock|futex|wait|park|sched|sem)/i, 2);
+  const gc = weightedMatch(topFunctions, /(gc|sweep|mark|scan|alloc|malloc|free)/i, 1);
+  const syscalls = weightedMatch(topFunctions, /(sys_|syscall|read|write|recv|send|poll|epoll|open|close|fsync|io)/i, 1);
+  return {
+    cpu,
+    blocked,
+    gc,
+    syscalls,
+  };
+}
+
+function weightedMatch(
+  topFunctions: Array<{ name: string; percent: number; module: string }>,
+  pattern: RegExp,
+  baseline: number,
+) {
+  const matched = topFunctions
+    .filter((entry) => pattern.test(entry.name) || pattern.test(entry.module))
+    .reduce((sum, entry) => sum + entry.percent, 0);
+  return clampMetric(Math.round(matched) || baseline, 0, 95);
+}
+
+function clampMetric(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 interface PerfCollectionAssessmentInput {
