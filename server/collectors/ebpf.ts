@@ -64,7 +64,9 @@ export const ebpfCollector: CollectorPlugin = {
         const script = `profile:hz:${profile.sampleRate} /pid == ${attachPid}/ { @[ustack] = count(); } interval:s:${durationSeconds} { exit(); }`;
         collectionCommand = `${bpftraceBin} -e ${script}`;
         const result = await runLinuxCollectorCommand(bpftraceBin, ['-e', script], {
-          timeoutMs: Math.max(20_000, durationSeconds * 2_000),
+          // bpftrace can spend extra time compiling probes and flushing maps, especially in
+          // containerized demo setups with host PID access.
+          timeoutMs: Math.max(35_000, durationSeconds * 4_000),
           requirePrivilege: true,
         });
         rawSnapshot = [result.stdout?.trim(), result.stderr?.trim()].filter(Boolean).join('\n');

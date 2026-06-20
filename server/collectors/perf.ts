@@ -74,7 +74,9 @@ export const perfCollector: CollectorPlugin = {
         ];
         collectionCommand = `perf ${recordArgs.join(' ')}`;
         const perfRecord = await runLinuxCollectorCommand('perf', recordArgs, {
-          timeoutMs: Math.max(15_000, durationSeconds * 2_000),
+          // perf record can take noticeably longer than the capture window in containers
+          // because attach setup, sudo handoff, and perf.data flush happen after sampling stops.
+          timeoutMs: Math.max(30_000, durationSeconds * 4_000),
           requirePrivilege: true,
         });
         session.log('capture', perfRecord.stderr?.trim() || 'perf record completed.');
@@ -89,7 +91,7 @@ export const perfCollector: CollectorPlugin = {
         }
 
         const perfScript = await runLinuxCollectorCommand('perf', ['script', '-i', perfDataPath], {
-          timeoutMs: 20_000,
+          timeoutMs: 30_000,
           requirePrivilege: true,
         });
         scriptOutputHadFrames = perfScript.stdout.trim().length > 0;
