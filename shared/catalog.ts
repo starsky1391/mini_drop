@@ -67,7 +67,7 @@ export const collectors: CollectorInfo[] = [
     id: 'ebpf',
     name: 'eBPF Probe Set',
     displayNameZh: 'eBPF Probe Set',
-    languageCoverage: ['Linux services'],
+    languageCoverage: ['Go', 'C++', 'Java', 'Python', 'Linux services'],
     latencyLabel: 'Kernel-aware tracing',
     latencyLabelZh: '内核态可观测',
     note: 'Useful for syscall-heavy and cross-process contention analysis.',

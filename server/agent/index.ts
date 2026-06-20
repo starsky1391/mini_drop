@@ -119,7 +119,7 @@ export async function registerAgentProcess(config: AgentRuntimeConfig, client: A
 }
 
 async function buildAgentProcessSnapshot(): Promise<AgentProcessSnapshot> {
-  const processes = await listLocalProcesses();
+  const processes = await listLocalProcesses(0);
   return {
     collectedAt: processes.collectedAt,
     processes: processes.processes,

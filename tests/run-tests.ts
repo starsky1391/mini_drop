@@ -151,6 +151,12 @@ test('loadLocalProcesses returns local process metadata with pid and command sum
   assert.ok((sampleProcess.commandSummary ?? '').length > 0);
 });
 
+test('ebpf collector stays selectable for supported language workflows instead of auto-resetting on Go', () => {
+  const ebpfCollector = collectors.find((collector) => collector.id === 'ebpf');
+  assert.ok(ebpfCollector);
+  assert.ok(ebpfCollector?.languageCoverage.includes('Go'));
+});
+
 test('loadLocalProcesses prefers online agent process snapshots over server-local discovery', async () => {
   const agentId = `process-agent-${Date.now()}`;
   await upsertAgent({

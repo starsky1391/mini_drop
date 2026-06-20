@@ -15,7 +15,7 @@ export async function listLocalProcesses(limit = 200): Promise<ProcessListRespon
   const processes = await readLocalProcesses();
   return {
     collectedAt: new Date().toISOString(),
-    processes: processes.slice(0, limit),
+    processes: limit > 0 ? processes.slice(0, limit) : processes,
   };
 }
 
