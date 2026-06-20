@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type {
   AgentSummary,
   AppState,
@@ -25,6 +26,7 @@ import {
   taskArtifactIndexPath,
   taskAuditTrailPath,
   taskReasonerSnapshotPath,
+  taskRunStatePath,
   taskStagedUploadPath,
   taskSnapshotPath,
 } from './layout.js';
@@ -127,6 +129,21 @@ export async function syncContinuousProfileSliceIndex(entries: ContinuousProfile
   await writeJson(continuousSliceIndexPath(), entries);
 }
 
+export async function purgeTaskPersistence(taskId: string, artifactPaths: string[] = []) {
+  await ensureStorageLayout();
+  const managedArtifacts = artifactPaths.filter(isManagedStoragePath);
+  await Promise.allSettled([
+    fs.rm(taskSnapshotPath(taskId), { force: true }),
+    fs.rm(taskArtifactIndexPath(taskId), { force: true }),
+    fs.rm(taskAuditTrailPath(taskId), { force: true }),
+    fs.rm(taskReasonerSnapshotPath(taskId), { force: true }),
+    fs.rm(taskStagedUploadPath(taskId), { force: true }),
+    fs.rm(taskContinuousSlicesPath(taskId), { force: true }),
+    fs.rm(taskRunStatePath(taskId), { force: true }),
+    ...managedArtifacts.map((artifactPath) => fs.rm(artifactPath, { force: true })),
+  ]);
+}
+
 export async function removeStagedCollectorOutcome(taskId: string) {
   try {
     await fs.rm(taskStagedUploadPath(taskId), { force: true });
@@ -225,4 +242,10 @@ async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   } catch {
     return fallback;
   }
+}
+
+function isManagedStoragePath(filePath: string) {
+  const resolved = path.resolve(filePath);
+  const dataRoot = path.resolve(storageLayout.dataDir);
+  return resolved === dataRoot || resolved.startsWith(`${dataRoot}${path.sep}`);
 }

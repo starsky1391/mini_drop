@@ -16,6 +16,7 @@ import type {
   TaskComparison,
   TaskCreateInput,
   TaskDetail,
+  TaskFlowDeleteResponse,
   TaskReasonerResponse,
   TaskReasonerSnapshot,
   TaskProcessContextSummary,
@@ -543,6 +544,10 @@ function shortId(value: string) {
 
 function sameComparisonScope(left: TaskDetail, right: TaskDetail) {
   return left.target === right.target && left.collector === right.collector && left.scenario === right.scenario;
+}
+
+function isFallbackTask(task: Pick<TaskDetail, 'sampleSource' | 'targetContext'>) {
+  return task.targetContext.attachSource === 'managed-fallback' || task.sampleSource.toLowerCase().includes('fallback');
 }
 
 function pressureTone(value: number) {
@@ -1311,6 +1316,7 @@ function App() {
   const [continuousScope, setContinuousScope] = useState<'task' | 'history'>('history');
   const [continuousLimit, setContinuousLimit] = useState<number>(6);
   const [selectedContinuousSliceId, setSelectedContinuousSliceId] = useState<string | null>(null);
+  const [expandedReadinessCollectors, setExpandedReadinessCollectors] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let ignore = false;
@@ -1396,25 +1402,63 @@ function App() {
   }, [baselineId, selectedId, tasks]);
 
   const selectedTask = tasks.find((task) => task.id === selectedId) ?? tasks[0] ?? null;
+  const selectedTaskIsFallback = selectedTask ? isFallbackTask(selectedTask) : false;
   const comparableTasks = useMemo(
     () =>
       selectedTask
         ? tasks
-            .filter((task) => task.id !== selectedTask.id && sameComparisonScope(task, selectedTask))
+            .filter(
+              (task) =>
+                task.id !== selectedTask.id &&
+                sameComparisonScope(task, selectedTask) &&
+                !selectedTaskIsFallback &&
+                !isFallbackTask(task),
+            )
             .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
         : [],
-    [selectedTask, tasks],
+    [selectedTask, selectedTaskIsFallback, tasks],
   );
   const baselineTask = tasks.find((task) => task.id === baselineId) ?? comparableTasks[0] ?? null;
   const scopedHistoryTasks = useMemo(
     () =>
       selectedTask
-        ? [...comparableTasks, selectedTask]
+        ? [...comparableTasks, ...(selectedTaskIsFallback ? [] : [selectedTask])]
             .filter((task, index, all) => all.findIndex((candidate) => candidate.id === task.id) === index)
             .sort(earliestFirst)
         : [],
-    [comparableTasks, selectedTask],
+    [comparableTasks, selectedTask, selectedTaskIsFallback],
   );
+  const taskGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        target: string;
+        tasks: TaskDetail[];
+        fallbackCount: number;
+        latestUpdatedAt: string;
+      }
+    >();
+
+    for (const task of tasks) {
+      const current = groups.get(task.target);
+      if (current) {
+        current.tasks.push(task);
+        current.fallbackCount += isFallbackTask(task) ? 1 : 0;
+        if (Date.parse(task.updatedAt) > Date.parse(current.latestUpdatedAt)) {
+          current.latestUpdatedAt = task.updatedAt;
+        }
+      } else {
+        groups.set(task.target, {
+          target: task.target,
+          tasks: [task],
+          fallbackCount: isFallbackTask(task) ? 1 : 0,
+          latestUpdatedAt: task.updatedAt,
+        });
+      }
+    }
+
+    return [...groups.values()].sort((left, right) => Date.parse(right.latestUpdatedAt) - Date.parse(left.latestUpdatedAt));
+  }, [tasks]);
 
   useEffect(() => {
     if (!selectedTask) {
@@ -1667,6 +1711,36 @@ function App() {
     }
   }
 
+  async function handleDeleteTaskFlow(target: string) {
+    if (!window.confirm(`会硬删除逻辑目标 ${target} 下的全部任务、产物索引和审计快照，确认继续吗？`)) {
+      return;
+    }
+
+    setError(null);
+    try {
+      const response = await fetch(`/api/task-flows?target=${encodeURIComponent(target)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '删除任务流失败');
+      }
+
+      const deleted = (await response.json()) as TaskFlowDeleteResponse;
+      const deletedIdSet = new Set(deleted.deletedTaskIds);
+      setTasks((current) => current.filter((task) => !deletedIdSet.has(task.id)));
+      if (selectedId && deletedIdSet.has(selectedId)) {
+        const nextTask = tasks.find((task) => !deletedIdSet.has(task.id)) ?? null;
+        setSelectedId(nextTask?.id ?? null);
+      }
+      if (baselineId && deletedIdSet.has(baselineId)) {
+        setBaselineId(null);
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : '删除任务流失败');
+    }
+  }
+
   if (loading) {
     return <div className="shell booting">正在启动 Mini-Drop...</div>;
   }
@@ -1871,6 +1945,7 @@ function App() {
                 <div className="collector-readiness-grid">
                   {catalog.collectorReadiness.map((entry) => {
                     const maturityInfo = catalog.collectors.find((c) => c.id === entry.collector);
+                    const expanded = expandedReadinessCollectors[entry.collector] === true;
                     return (
                       <article
                         key={entry.collector}
@@ -1878,11 +1953,30 @@ function App() {
                       >
                         <div className="baseline-candidate-head">
                           <strong>{entry.collector}</strong>
-                          <span className={`tone tone-${readinessTone(entry.readiness)}`}>{readinessLabel(entry.readiness)}</span>
+                          <div className="readiness-card-actions">
+                            <span className={`tone tone-${readinessTone(entry.readiness)}`}>{readinessLabel(entry.readiness)}</span>
+                            <button
+                              type="button"
+                              className="readiness-expand"
+                              onClick={() =>
+                                setExpandedReadinessCollectors((current) => ({
+                                  ...current,
+                                  [entry.collector]: !current[entry.collector],
+                                }))
+                              }
+                              aria-expanded={expanded}
+                            >
+                              {expanded ? '收起' : '展开'}
+                            </button>
+                          </div>
                         </div>
-                        <small>{localizeLegacyText(entry.detail)}</small>
-                        {maturityInfo?.maturityNoteZh ? (
-                          <small className="maturity-note">{maturityInfo.maturityNoteZh}</small>
+                        {expanded ? (
+                          <>
+                            <small>{localizeLegacyText(entry.detail)}</small>
+                            {maturityInfo?.maturityNoteZh ? (
+                              <small className="maturity-note">{maturityInfo.maturityNoteZh}</small>
+                            ) : null}
+                          </>
                         ) : null}
                       </article>
                     );
@@ -1996,32 +2090,57 @@ function App() {
               </small>
             </div>
           ) : tasks.length > 0 ? (
-            <div className="task-list">
-              {tasks.map((task) => (
-                <button
-                  key={task.id}
-                  className={`task-item ${task.id === selectedId ? 'selected' : ''}`}
-                  onClick={() => setSelectedId(task.id)}
-                >
-                  <div className="task-topline">
-                    <strong>{task.title}</strong>
-                    <span className={`tone tone-${statusTone(task.status)}`}>{statusLabel(task.status)}</span>
-                  </div>
-                  <p>
-                    {task.collectorName} • {task.scenarioName} • {task.language}
-                  </p>
-                  <div className="task-progress">
-                    <span>进度</span>
-                    <div className="progress-track">
-                      <div className={`progress-fill tone-${statusTone(task.status)}`} style={{ width: `${task.progress}%` }} />
+            <div className="task-flow-groups">
+              {taskGroups.map((group) => (
+                <section key={group.target} className="task-group">
+                  <div className="task-group-head">
+                    <div className="task-group-summary">
+                      <strong>{group.target}</strong>
+                      <div className="task-group-meta">
+                        <span>{group.tasks.length} 条任务</span>
+                        <span>最近更新 {formatTime(group.latestUpdatedAt)}</span>
+                        {group.fallbackCount > 0 ? <span>{group.fallbackCount} 条 fallback</span> : null}
+                      </div>
                     </div>
-                    <strong>{task.progress}%</strong>
+                    <button type="button" className="flow-delete-button" onClick={() => handleDeleteTaskFlow(group.target)}>
+                      删除任务流
+                    </button>
                   </div>
-                  <div className="task-meta">
-                    <span>{task.target}</span>
-                    <span>{formatTime(task.updatedAt)}</span>
+                  <div className="task-list">
+                    {group.tasks.map((task) => {
+                      const fallback = isFallbackTask(task);
+                      return (
+                        <button
+                          key={task.id}
+                          className={`task-item ${task.id === selectedId ? 'selected' : ''} ${fallback ? 'task-item-fallback' : ''}`}
+                          onClick={() => setSelectedId(task.id)}
+                        >
+                          <div className="task-topline">
+                            <strong>{task.title}</strong>
+                            <div className="task-badge-row">
+                              {fallback ? <span className="tone tone-rose">Fallback</span> : null}
+                              <span className={`tone tone-${statusTone(task.status)}`}>{statusLabel(task.status)}</span>
+                            </div>
+                          </div>
+                          <p>
+                            {task.collectorName} • {task.scenarioName} • {task.language}
+                          </p>
+                          <div className="task-progress">
+                            <span>进度</span>
+                            <div className="progress-track">
+                              <div className={`progress-fill tone-${statusTone(task.status)}`} style={{ width: `${task.progress}%` }} />
+                            </div>
+                            <strong>{task.progress}%</strong>
+                          </div>
+                          <div className="task-meta">
+                            <span>{task.target}</span>
+                            <span>{formatTime(task.updatedAt)}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
-                </button>
+                </section>
               ))}
             </div>
           ) : (
@@ -2062,7 +2181,10 @@ function App() {
                 <article className="summary-card">
                   <span>样本来源</span>
                   <strong>{selectedTask.sampleSource}</strong>
-                  <small>共保留 {selectedTask.sampleCount} 个样本</small>
+                  <small>
+                    共保留 {selectedTask.sampleCount} 个样本
+                    {selectedTaskIsFallback ? ' · 当前任务已标记为 fallback，默认不进入趋势和基线。' : ''}
+                  </small>
                 </article>
                 <article className="summary-card">
                   <span>趋势结论</span>

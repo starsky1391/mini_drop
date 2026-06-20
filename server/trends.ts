@@ -11,6 +11,7 @@ import type {
 } from '../shared/types.js';
 import { compareTasks } from './comparison.js';
 import { pressureScore } from './analysis/comparison-helpers.js';
+import { isFallbackTask } from './store.js';
 
 const metricLabels: Record<keyof TaskMetrics, string> = {
   cpu: 'CPU 压力',
@@ -34,23 +35,27 @@ export function buildTaskTrends(taskId: string, tasks: TaskDetail[]): TaskTrends
         (task.status === 'DONE' || task.status === 'FAILED'),
     )
     .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt));
+  const comparableScoped = scoped.filter((task) => !isFallbackTask(task));
+  const excludedFallbackCount = scoped.length - comparableScoped.length;
+  const focusIsFallback = isFallbackTask(focus);
 
   const comparisons = new Map<string, TaskComparison>();
-  for (let index = 1; index < scoped.length; index += 1) {
-    const previous = scoped[index - 1]!;
-    const current = scoped[index]!;
+  for (let index = 1; index < comparableScoped.length; index += 1) {
+    const previous = comparableScoped[index - 1]!;
+    const current = comparableScoped[index]!;
     comparisons.set(current.id, compareTasks(previous, current));
   }
 
-  const transitions: TaskTrendTransition[] = scoped.slice(1).map((task, index) => ({
-    baselineId: scoped[index]!.id,
+  const transitions: TaskTrendTransition[] = comparableScoped.slice(1).map((task, index) => ({
+    baselineId: comparableScoped[index]!.id,
     currentId: task.id,
     updatedAt: task.updatedAt,
     comparison: comparisons.get(task.id)!,
   }));
 
   const points = scoped.map((task, index) => {
-    const comparison = comparisons.get(task.id) ?? null;
+    const excluded = isFallbackTask(task);
+    const comparison = excluded ? null : (comparisons.get(task.id) ?? null);
     const totalPressure = Number(pressureScore(task.metrics).toFixed(1));
     const topHotspot = task.topFunctions[0] ?? null;
     return {
@@ -70,18 +75,20 @@ export function buildTaskTrends(taskId: string, tasks: TaskDetail[]): TaskTrends
       topHotspotMappingState: topHotspot?.mappingState,
       processContext: buildProcessContextSummary(task),
       summary:
-        comparison?.summary ??
-        `这是当前历史范围内的首条可比运行。保留状态 ${task.status} / upload=${task.uploadState} / source=${task.sampleSource}。`,
-      driverLabel: comparison?.driver?.label ?? null,
-      driverEvidence: comparison?.driver?.evidence ?? null,
+        excluded
+          ? `这次运行仍依赖 fallback 采样路径，默认不会参与趋势归因和基线比较。保留状态 ${task.status} / upload=${task.uploadState} / source=${task.sampleSource}。`
+          : comparison?.summary ??
+            `这是当前历史范围内的首条可比运行。保留状态 ${task.status} / upload=${task.uploadState} / source=${task.sampleSource}。`,
+      driverLabel: excluded ? null : (comparison?.driver?.label ?? null),
+      driverEvidence: excluded ? null : (comparison?.driver?.evidence ?? null),
     };
   });
 
   const metricSeries: TaskMetricSeries[] = (Object.keys(metricLabels) as Array<keyof TaskMetrics>).map((metric) => ({
     metric,
     label: metricLabels[metric],
-    points: scoped.map((task, index) => {
-      const previous = scoped[index - 1];
+    points: comparableScoped.map((task, index) => {
+      const previous = comparableScoped[index - 1];
       const currentValue = task.metrics[metric];
       const delta = previous ? Number((currentValue - previous.metrics[metric]).toFixed(1)) : null;
       return {
@@ -95,8 +102,8 @@ export function buildTaskTrends(taskId: string, tasks: TaskDetail[]): TaskTrends
     }),
   }));
 
-  const hotspotChanges: TaskHotspotChange[] = scoped.slice(1).map((task, index) => {
-    const previous = scoped[index]!;
+  const hotspotChanges: TaskHotspotChange[] = comparableScoped.slice(1).map((task, index) => {
+    const previous = comparableScoped[index]!;
     const comparison = comparisons.get(task.id)!;
     return {
       baselineId: previous.id,
@@ -113,9 +120,9 @@ export function buildTaskTrends(taskId: string, tasks: TaskDetail[]): TaskTrends
     };
   });
 
-  const priorRuns = Math.max(0, scoped.length - 1);
-  const latestComparison = comparisons.get(focus.id) ?? null;
-  const historySummary = buildHistorySummary(focus.id, scoped, transitions);
+  const priorRuns = Math.max(0, comparableScoped.length - 1);
+  const latestComparison = focusIsFallback ? null : (comparisons.get(focus.id) ?? null);
+  const historySummary = buildHistorySummary(comparableScoped.at(-1)?.id ?? focus.id, comparableScoped, transitions);
   const streakText =
     historySummary.currentStreak.verdict === 'initial'
       ? '仅包含起点运行'
@@ -123,12 +130,16 @@ export function buildTaskTrends(taskId: string, tasks: TaskDetail[]): TaskTrends
   const latestDriverText = historySummary.latestDriver
     ? ` 最近的主导 driver 是 ${historySummary.latestDriver.label}（${historySummary.latestDriver.delta > 0 ? '+' : ''}${historySummary.latestDriver.delta.toFixed(1)}）。${historySummary.latestDriver.evidence}`
     : '';
+  const fallbackText =
+    excludedFallbackCount > 0 ? ` 已默认排除 ${excludedFallbackCount} 条 fallback 运行，避免它们进入趋势归因和基线计算。` : '';
   const summary =
-    priorRuns === 0
-      ? `当前目标、collector 与 scenario 还没有更早的可比较运行。当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。`
+    focusIsFallback
+      ? `当前任务仍依赖 fallback 采样路径，默认不会作为趋势基线使用。当前目标、collector 与 scenario 下可用的非 fallback 历史运行有 ${comparableScoped.length} 条。当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。${fallbackText}${historySummary.compatibilityWarnings.length > 0 ? ` 可比性提醒：${historySummary.compatibilityWarnings.join(' ')}` : ''}`
+      : priorRuns === 0
+      ? `当前目标、collector 与 scenario 还没有更早的可比较运行。当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。${fallbackText}`
       : latestComparison
-        ? `当前任务位于一个 ${scoped.length} 次运行的历史序列中。最近一步的结论是 ${verdictLabel(latestComparison.verdict)}，综合压力变化为 ${latestComparison.totalPressureDelta > 0 ? '+' : ''}${latestComparison.totalPressureDelta.toFixed(1)}。当前范围正处于${streakText}。${latestDriverText} 当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。${historySummary.compatibilityWarnings.length > 0 ? ` 可比性提醒：${historySummary.compatibilityWarnings.join(' ')}` : ''}`
-        : `当前任务属于一个 ${scoped.length} 次运行的历史序列，其中更早的可比较运行有 ${priorRuns} 次。当前范围正处于${streakText}。${latestDriverText} 当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。${historySummary.compatibilityWarnings.length > 0 ? ` 可比性提醒：${historySummary.compatibilityWarnings.join(' ')}` : ''}`;
+        ? `当前任务位于一个 ${comparableScoped.length} 次运行的历史序列中。最近一步的结论是 ${verdictLabel(latestComparison.verdict)}，综合压力变化为 ${latestComparison.totalPressureDelta > 0 ? '+' : ''}${latestComparison.totalPressureDelta.toFixed(1)}。当前范围正处于${streakText}。${latestDriverText} 当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。${fallbackText}${historySummary.compatibilityWarnings.length > 0 ? ` 可比性提醒：${historySummary.compatibilityWarnings.join(' ')}` : ''}`
+        : `当前任务属于一个 ${comparableScoped.length} 次运行的历史序列，其中更早的可比较运行有 ${priorRuns} 次。当前范围正处于${streakText}。${latestDriverText} 当前证据上下文为 ${focus.status} / upload=${focus.uploadState} / source=${focus.sampleSource}。${fallbackText}${historySummary.compatibilityWarnings.length > 0 ? ` 可比性提醒：${historySummary.compatibilityWarnings.join(' ')}` : ''}`;
 
   return {
     taskId: focus.id,

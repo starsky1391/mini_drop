@@ -14,10 +14,12 @@ import { buildTaskTrends } from '../trends.js';
 import { getProcessByPid, listLocalProcesses } from '../process-discovery.js';
 import {
   appendAuditEvent,
+  deleteTaskFlow,
   getAgent,
   getTaskArtifactBundle,
   getTask,
   getTaskReasonerSnapshot,
+  isFallbackTask,
   listAgents,
   listAuditEvents,
   listTaskArtifacts,
@@ -54,6 +56,7 @@ import type {
   TaskCreateInput,
   TaskCreateRequest,
   TaskDetailResponse,
+  TaskFlowDeleteResponse,
   TaskListFilters,
   TaskProcessInfo,
   TaskListResponse,
@@ -789,7 +792,8 @@ export async function loadTaskContinuousProfile(
         (candidate) =>
           candidate.target === task.target &&
           candidate.collector === task.collector &&
-          candidate.scenario === task.scenario,
+          candidate.scenario === task.scenario &&
+          !isFallbackTask(candidate),
       );
 
       const scopedSlices = (
@@ -838,6 +842,10 @@ export async function loadTaskRunState(taskId: string) {
 
 export async function cancelTask(taskId: string) {
   return await cancelTaskExecution(taskId, 'Stop requested via API.', 'api');
+}
+
+export async function deleteTaskFlowByTarget(target: string): Promise<TaskFlowDeleteResponse | null> {
+  return deleteTaskFlow(target);
 }
 
 export async function loadArtifactPreview(taskId: string, artifactPath: string) {

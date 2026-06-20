@@ -591,6 +591,12 @@ export interface TaskListResponse {
   tasks: TaskDetail[];
 }
 
+export interface TaskFlowDeleteResponse {
+  target: string;
+  deletedTaskIds: string[];
+  deletedCount: number;
+}
+
 export interface TaskDetailResponse {
   task: TaskDetail;
 }

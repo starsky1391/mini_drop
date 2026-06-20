@@ -4,6 +4,7 @@ import {
   cancelTask,
   loadArtifactPreview,
   createTaskAndDispatch,
+  deleteTaskFlowByTarget,
   loadAuditFeed,
   loadTaskArtifacts,
   loadTaskAudit,
@@ -141,6 +142,28 @@ export function createTaskRouter() {
     }
 
     res.json(canceled);
+  });
+
+  router.delete('/task-flows', async (req, res) => {
+    const target = typeof req.query.target === 'string' ? req.query.target.trim() : '';
+    if (!target) {
+      sendApiError(res, 400, {
+        code: 'task_flow_target_required',
+        message: 'target query parameter is required.',
+      });
+      return;
+    }
+
+    const deleted = await deleteTaskFlowByTarget(target);
+    if (!deleted) {
+      sendApiError(res, 404, {
+        code: 'task_flow_not_found',
+        message: 'No task flow matched the requested logical target.',
+      });
+      return;
+    }
+
+    res.json(deleted);
   });
 
   return router;

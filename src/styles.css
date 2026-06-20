@@ -420,6 +420,32 @@ h3 {
   background: rgba(248, 250, 252, 0.9);
 }
 
+.readiness-card-actions,
+.task-badge-row,
+.task-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.readiness-card-actions {
+  margin-left: auto;
+}
+
+.readiness-expand,
+.flow-delete-button {
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--muted-strong);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.flow-delete-button {
+  color: var(--rose);
+}
+
 .readiness-card small,
 .preview-summary,
 .reasoner-note p {
@@ -573,10 +599,41 @@ h3 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  max-height: min(42vh, 540px);
+  align-content: start;
+}
+
+.task-flow-groups {
+  display: grid;
+  gap: 16px;
+  max-height: min(52vh, 680px);
   overflow: auto;
   padding-right: 4px;
-  align-content: start;
+}
+
+.task-group {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.task-group-head {
+  justify-content: space-between;
+}
+
+.task-group-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.task-group-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .task-item {
@@ -1653,6 +1710,10 @@ h3 {
 .citation-panel {
   display: grid;
   gap: 14px;
+}
+
+.task-item-fallback {
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.22);
 }
 
 .tool-trace-list,

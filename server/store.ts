@@ -25,13 +25,16 @@ import { buildArtifactPreviewMetadata } from './artifact-preview.js';
 import {
   appendAuditTrailEvent,
   ensureStorageLayout,
+  purgeTaskPersistence,
   persistAgentSnapshot,
   persistArtifactIndex,
   persistReasonerSnapshot,
   persistTaskSnapshot,
   readArtifactIndex,
   readAuditTrail,
+  readContinuousProfileSliceIndex,
   readReasonerSnapshot,
+  syncContinuousProfileSliceIndex,
   syncStateIndexes,
 } from './storage/repository.js';
 import { storageLayout } from './storage/layout.js';
@@ -248,6 +251,13 @@ export async function listTasks(filters: TaskListFilters = {}) {
   return sortTasks(applyTaskFilters(state.tasks, filters));
 }
 
+export function isFallbackTask(task: Pick<TaskDetail, 'sampleSource' | 'targetContext'>) {
+  return (
+    task.targetContext.attachSource === 'managed-fallback' ||
+    task.sampleSource.toLowerCase().includes('fallback')
+  );
+}
+
 export async function getTask(id: string) {
   const state = await readState();
   return state.tasks.find((task) => task.id === id) ?? null;
@@ -336,6 +346,45 @@ export async function appendAuditEvent(event: TaskAuditEvent) {
     });
     await appendAuditTrailEvent(event);
     return event;
+  });
+}
+
+export async function deleteTaskFlow(target: string) {
+  return withStateMutation(async () => {
+    const normalizedTarget = target.trim();
+    if (!normalizedTarget) {
+      return null;
+    }
+
+    const state = await readState();
+    const matchingTasks = state.tasks.filter((task) => task.target === normalizedTarget);
+    if (matchingTasks.length === 0) {
+      return null;
+    }
+
+    const deletedTaskIds = matchingTasks.map((task) => task.id);
+    const deletedIdSet = new Set(deletedTaskIds);
+
+    await writeState({
+      ...state,
+      tasks: state.tasks.filter((task) => !deletedIdSet.has(task.id)),
+      auditEvents: state.auditEvents.filter((event) => !deletedIdSet.has(event.taskId)),
+    });
+
+    const sliceIndex = await readContinuousProfileSliceIndex();
+    if (sliceIndex) {
+      await syncContinuousProfileSliceIndex(sliceIndex.filter((entry) => !deletedIdSet.has(entry.taskId)));
+    }
+
+    await Promise.all(
+      matchingTasks.map((task) => purgeTaskPersistence(task.id, task.artifacts.map((artifact) => artifact.path))),
+    );
+
+    return {
+      target: normalizedTarget,
+      deletedTaskIds,
+      deletedCount: deletedTaskIds.length,
+    };
   });
 }
 

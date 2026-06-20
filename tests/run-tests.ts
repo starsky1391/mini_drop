@@ -29,6 +29,7 @@ import {
 } from '../server/profiling-slices.js';
 import {
   saveTask,
+  deleteTaskFlow,
   getTaskReasonerSnapshot,
   listAuditEvents,
   getTask,
@@ -536,6 +537,91 @@ test('loadCatalogCollectorReadiness prefers registered online agent collectors o
   assert.equal(readiness.agentId, agentId);
   assert.equal(readiness.collectorReadiness[0]?.collector, 'perf');
   assert.match(readiness.notes[0] ?? '', /已注册 Agent/);
+});
+
+test('buildTaskTrends excludes fallback tasks from default comparisons while keeping them visible', () => {
+  const target = `trend-fallback-${Date.now()}@local`;
+  const first = createTaskDetail({
+    target,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+  first.updatedAt = '2026-06-20T10:00:00.000Z';
+
+  const fallback = createTaskDetail({
+    target,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+  fallback.id = `${fallback.id}-fallback`;
+  fallback.updatedAt = '2026-06-20T10:10:00.000Z';
+  fallback.sampleSource = 'python-stack-sampling:fallback';
+  fallback.targetContext.attachSource = 'managed-fallback';
+
+  const current = createTaskDetail({
+    target,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+  current.updatedAt = '2026-06-20T10:20:00.000Z';
+
+  const trends = buildTaskTrends(current.id, [first, fallback, current]);
+  assert.ok(trends);
+  assert.equal(trends?.points.length, 3);
+  assert.equal(trends?.transitions.length, 1);
+  assert.equal(trends?.transitions[0]?.baselineId, first.id);
+  assert.equal(trends?.transitions[0]?.currentId, current.id);
+  assert.match(trends?.summary ?? '', /已默认排除 1 条 fallback 运行/);
+  const fallbackPoint = trends?.points.find((point) => point.taskId === fallback.id);
+  assert.ok(fallbackPoint);
+  assert.match(fallbackPoint?.summary ?? '', /默认不会参与趋势归因/);
+});
+
+test('deleteTaskFlow hard-deletes persisted task records for a logical target', async () => {
+  const target = `delete-flow-${Date.now()}@local`;
+  const keepTarget = `${target}-keep`;
+  const task = createTaskDetail({
+    target,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+  const sibling = createTaskDetail({
+    target,
+    language: 'Go',
+    collector: 'perf',
+    scenario: 'cpu_hot',
+  });
+  const survivor = createTaskDetail({
+    target: keepTarget,
+    language: 'Python',
+    collector: 'py-spy',
+    scenario: 'python_hot_loop',
+  });
+
+  await saveTask(task);
+  await saveTask(sibling);
+  await saveTask(survivor);
+
+  const deleted = await deleteTaskFlow(target);
+  assert.ok(deleted);
+  assert.equal(deleted?.deletedCount, 2);
+  assert.deepEqual(new Set(deleted?.deletedTaskIds ?? []), new Set([task.id, sibling.id]));
+
+  const remaining = await listTasks();
+  assert.ok(remaining.some((item) => item.id === survivor.id));
+  assert.ok(remaining.every((item) => item.target !== target));
+  assert.equal(await getTask(task.id), null);
+  assert.equal(await getTask(sibling.id), null);
+
+  const snapshotExists = await fs
+    .access(path.join(storageLayout.tasksDir, `${task.id}.json`))
+    .then(() => true)
+    .catch(() => false);
+  assert.equal(snapshotExists, false);
 });
 
 test('assessPerfCollection partial-real notes no longer classify retained real artifacts as pure fallback', () => {

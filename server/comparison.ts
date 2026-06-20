@@ -157,6 +157,9 @@ function buildComparisonCompatibility(baseline: TaskDetail, current: TaskDetail)
       : null;
 
   const warnings: string[] = [];
+  if (isFallbackLikeRun(baseline) || isFallbackLikeRun(current)) {
+    warnings.push('至少一侧运行仍依赖 fallback 采样路径，默认不建议把它作为趋势或基线。');
+  }
   if (!sameTargetType) {
     warnings.push(
       `目标模式从 ${targetTypeLabel(baseline.targetContext.targetType)} 变成了 ${targetTypeLabel(current.targetContext.targetType)}，历史对比可能混入不同采样入口。`,
@@ -281,4 +284,8 @@ function attachSourceLabel(source: TaskDetail['targetContext']['attachSource']) 
     default:
       return 'managed workload';
   }
+}
+
+function isFallbackLikeRun(task: TaskDetail) {
+  return task.targetContext.attachSource === 'managed-fallback' || task.sampleSource.toLowerCase().includes('fallback');
 }
