@@ -38,6 +38,14 @@ npm.cmd run build
 npm.cmd run start
 ```
 
+如果你是在 `cmd.exe` 而不是 PowerShell 里设置环境变量，语法要改成：
+
+```cmd
+set MINI_DROP_HOST_PORT=18787
+docker compose up -d
+npm.cmd run demo
+```
+
 如果要单独启动本机 Agent：
 
 ```powershell
@@ -52,6 +60,21 @@ node dist/server/server/agent/index.js
 - `Dockerfile` 和 `docker-compose.yml` 已提供 `mini-drop-server` + `mini-drop-agent` 双服务启动形态。
 - Linux 或容器环境可用 `scripts/bootstrap-demo.sh` 和 `scripts/docker-demo.sh` 做演示启动。
 - 评审推荐路径是 `docker compose up -d` 后执行 `make demo`，它会使用 `docker-compose.ebpf-demo.yml` 启动一个内置 Go demo target，并打印可在 Mini-Drop Web UI 中选择的真实 PID。
+- Windows 上如果 `make` 不可用，或之前遇到 `The system cannot find the path specified`，可以直接改用：
+
+```powershell
+npm.cmd run demo
+```
+
+常用对应命令：
+
+```powershell
+npm.cmd run demo:load
+npm.cmd run demo:io
+npm.cmd run demo:sched
+npm.cmd run demo:down
+```
+
 - 当前仓库所在环境里已通过 `docker compose config` 校验 compose 配置；若 Docker daemon 未启动，则无法在本机完成 `docker compose up` 实跑。
 
 ### Linux eBPF Demo
@@ -93,6 +116,20 @@ make demo-sched
 - 需要 GNU Make 或兼容 `make`。
 - `make demo` 的 eBPF agent 使用 privileged container、`pid: host`、`CAP_BPF`、`CAP_PERFMON`、`SYS_ADMIN`、`SYS_PTRACE`、unconfined AppArmor 和 unconfined seccomp。
 - 如果宿主机禁用 BPF、缺少 tracing/debugfs 挂载，或安全策略禁止 privileged container，eBPF 会降级并在任务详情中显示原因。
+
+如果 Linux 上 `perf` / `bpftrace` 需要 `sudo`，仓库里已经提供了一键权限脚本。它不会让服务进程偷偷修改系统，而是由你显式执行一次：
+
+```bash
+bash scripts/setup-linux-collector-sudo.sh --user "$USER" --apply-sysctl
+```
+
+只预览即将写入的 sudoers 内容：
+
+```bash
+bash scripts/setup-linux-collector-sudo.sh --user "$USER" --print-only
+```
+
+脚本会自动探测当前机器上的 `perf`、`bpftrace` 和可见的 async-profiler helper 路径，并写入最小化 `NOPASSWD` 规则到 `/etc/sudoers.d/mini-drop-collectors`。
 
 ## Reasoner 配置
 

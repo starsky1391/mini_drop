@@ -1,5 +1,3 @@
-SHELL := /bin/sh
-
 COMPOSE ?= docker compose
 DEMO_COMPOSE := $(COMPOSE) -f docker-compose.yml -f docker-compose.ebpf-demo.yml
 DEMO_TARGET ?= mini-drop-demo-target
@@ -13,39 +11,16 @@ demo-up:
 	$(DEMO_COMPOSE) up --build -d mini-drop-server mini-drop-agent $(DEMO_TARGET)
 
 demo-wait:
-	@i=0; until curl -fsS http://127.0.0.1:$(MINI_DROP_HOST_PORT)/api/health >/dev/null 2>&1; do \
-		i=$$((i + 1)); \
-		if [ "$$i" -ge 60 ]; then echo "Mini-Drop did not become healthy"; exit 1; fi; \
-		sleep 2; \
-	done
-	@i=0; until curl -fsS http://127.0.0.1:18080/health >/dev/null 2>&1; do \
-		i=$$((i + 1)); \
-		if [ "$$i" -ge 60 ]; then echo "demo target did not become healthy"; exit 1; fi; \
-		sleep 2; \
-	done
+	node scripts/demo-control.mjs wait
 
 demo-pid:
-	@container="$$( $(DEMO_COMPOSE) ps -q $(DEMO_TARGET) )"; \
-	if [ -z "$$container" ]; then echo "demo target container is not running"; exit 1; fi; \
-	pid="$$(docker inspect -f '{{.State.Pid}}' "$$container")"; \
-	echo ""; \
-	echo "Mini-Drop UI: http://127.0.0.1:$(MINI_DROP_HOST_PORT)/"; \
-	echo "Demo target: http://127.0.0.1:18080/health"; \
-	echo "Use this PID in Mini-Drop: $$pid"; \
-	echo "Recommended task: targetType=pid/process, language=Go, collector=eBPF, scenario=cpu_hot"; \
-	echo ""; \
-	echo "Generate service load: make demo-load"; \
-	echo "Generate raw IO jitter: make demo-io"; \
-	echo "Generate scheduler jitter: make demo-sched"; \
-	echo "";
+	node scripts/demo-control.mjs pid
 
 demo-load:
-	@$(DEMO_COMPOSE) --profile loadgen rm -f -s demo-loadgen >/dev/null 2>&1 || true
-	$(DEMO_COMPOSE) --profile loadgen up -d --force-recreate demo-loadgen
-	@echo "demo-loadgen started in background. Use '$(MAKE) demo-load-stop' to stop it."
+	node scripts/demo-control.mjs load
 
 demo-load-stop:
-	$(DEMO_COMPOSE) --profile loadgen stop demo-loadgen
+	node scripts/demo-control.mjs load-stop
 
 demo-io:
 	$(DEMO_COMPOSE) --profile jitter run --rm io-jitter
