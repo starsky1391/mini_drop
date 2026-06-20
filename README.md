@@ -60,6 +60,7 @@ node dist/server/server/agent/index.js
 - `Dockerfile` 和 `docker-compose.yml` 已提供 `mini-drop-server` + `mini-drop-agent` 双服务启动形态。
 - Linux 或容器环境可用 `scripts/bootstrap-demo.sh` 和 `scripts/docker-demo.sh` 做演示启动。
 - 评审推荐路径是 `docker compose up -d` 后执行 `make demo`，它会使用 `docker-compose.ebpf-demo.yml` 启动一个内置 Go demo target，并打印可在 Mini-Drop Web UI 中选择的真实 PID。
+- 设计文档见 [docs/design-document.md](/C:/1Project/project_web/drop/docs/design-document.md)，覆盖架构图、状态机、关键取舍、AI 协作、性能自证和后续 7 天计划。
 - Windows 上如果 `make` 不可用，或之前遇到 `The system cannot find the path specified`，可以直接改用：
 
 ```powershell
